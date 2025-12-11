@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import io
 import numpy as np
+import re
 
 # ========================================
 # 페이지 설정
@@ -16,6 +17,46 @@ st.set_page_config(
 )
 
 # ========================================
+# 주차 관련 함수
+# ========================================
+def validate_week_format(week_str):
+    """주차 형식 검증 (예: 24'W1 ~ 25'W52)"""
+    pattern = r"^\d{2}'W\d{1,2}$"
+    if re.match(pattern, week_str):
+        parts = week_str.split("'W")
+        year_code = int(parts[0])
+        week_num = int(parts[1])
+        
+        # 24'W1 ~ 25'W52 범위 검증
+        if year_code == 24 and 1 <= week_num <= 52:
+            return True
+        elif year_code == 25 and 1 <= week_num <= 52:
+            return True
+        else:
+            return False
+    return False
+
+def parse_week(week_str):
+    """주차 문자열을 연도와 주차로 분리"""
+    if validate_week_format(week_str):
+        parts = week_str.split("'W")
+        year = int("20" + parts[0])
+        week = int(parts[1])
+        return year, week
+    return None, None
+
+def get_week_options():
+    """주차 선택 옵션 생성 (24'W1 ~ 25'W52)"""
+    weeks = []
+    # 2024년 1주차 ~ 52주차
+    for week in range(1, 53):
+        weeks.append(f"24'W{week}")
+    # 2025년 1주차 ~ 52주차
+    for week in range(1, 53):
+        weeks.append(f"25'W{week}")
+    return weeks
+
+# ========================================
 # 품번 파싱 함수
 # ========================================
 def parse_item_code(code):
@@ -24,12 +65,12 @@ def parse_item_code(code):
         return None
     
     try:
-        brand = code[0]  # T
-        gender = code[1]  # M/W/U
-        item_code = code[2:4]  # SK, RS 등
-        sequence = code[4:7]  # 109
-        year = code[7]  # 5
-        season = code[8] if len(code) > 8 else None  # 4
+        brand = code[0]
+        gender = code[1]
+        item_code = code[2:4]
+        sequence = code[4:7]
+        year = code[7]
+        season = code[8] if len(code) > 8 else None
         
         return {
             'brand': brand,
@@ -46,17 +87,13 @@ def parse_item_code(code):
 # 아이템 코드 매핑
 # ========================================
 ITEM_MAPPING = {
-    # 아우터
     'DJ': '다운점퍼', 'DV': '다운베스트', 'JK': '자켓', 'JP': '점퍼',
     'KC': '니트가디건', 'PD': '패딩', 'VT': '베스트', 'WJ': '윈드브레이커', 'WT': '우븐티셔츠',
-    # 이너
     'HD': '후드티', 'KP': '스웨터풀오버', 'KV': '스웨터베스트', 'KU': '반팔스웨터',
     'MT': '맨투맨', 'OP': '원피스', 'PQ': '폴로티셔츠', 'RL': '긴팔티셔츠',
     'RS': '반팔티셔츠', 'TR': '트레이닝상의', 'WS': '우븐셔츠',
-    # 하의
     'LG': '레깅스', 'PT': '팬츠', 'SK': '스커트', 'SP': '반바지',
     'SR': '여성하의스코트', 'TB': '트레이닝숏팬츠', 'TP': '트레이닝하의',
-    # 기타
     'BR': '브라', 'SL': '슬리브리스'
 }
 
@@ -82,7 +119,7 @@ LENGTH_OPTIONS = ['Crop', 'Mid', 'Long', 'Regular', 'Semi-Crop', 'Short']
 # ========================================
 if 'sales_data' not in st.session_state:
     st.session_state.sales_data = pd.DataFrame(columns=[
-        '날짜', '품번', '컬러', '소재명', '핏', '기장', '판매수량', '판매금액'
+        '주차', '품번', '컬러', '소재명', '핏', '기장', '판매수량', '판매금액'
     ])
 
 if 'material_data' not in st.session_state:
@@ -94,11 +131,14 @@ if 'material_data' not in st.session_state:
 # 데이터 처리 함수
 # ========================================
 def enrich_sales_data(df):
-    """판매 데이터에 품번 파싱 정보 추가"""
+    """판매 데이터에 품번 파싱 정보 및 주차 정보 추가"""
     enriched = df.copy()
     
     parsed_data = []
-    for code in enriched['품번']:
+    week_data = []
+    
+    for idx, row in enriched.iterrows():
+        code = row['품번']
         parsed = parse_item_code(code)
         if parsed:
             parsed_data.append({
@@ -114,9 +154,17 @@ def enrich_sales_data(df):
                 '성별': '알수없음', '아이템코드': '', '아이템명': '알수없음',
                 '카테고리': '기타', '연도': '알수없음', '시즌': '알수없음'
             })
+        
+        week_str = row['주차']
+        year, week = parse_week(week_str)
+        week_data.append({
+            '주차_연도': year if year else 0,
+            '주차_번호': week if week else 0
+        })
     
     parsed_df = pd.DataFrame(parsed_data)
-    result = pd.concat([enriched.reset_index(drop=True), parsed_df], axis=1)
+    week_df = pd.DataFrame(week_data)
+    result = pd.concat([enriched.reset_index(drop=True), parsed_df, week_df], axis=1)
     return result
 
 def predict_combination(gender, item_name, material, fit, length):
@@ -126,7 +174,6 @@ def predict_combination(gender, item_name, material, fit, length):
     
     df = enrich_sales_data(st.session_state.sales_data)
     
-    # 완전 일치 조합 찾기
     exact_match = df[
         (df['성별'] == gender) &
         (df['아이템명'] == item_name) &
@@ -144,7 +191,6 @@ def predict_combination(gender, item_name, material, fit, length):
             'confidence': 95
         }
     
-    # 유사 조합 찾기 (4개 일치)
     similar = df[
         (df['성별'] == gender) &
         (df['아이템명'] == item_name) &
@@ -161,7 +207,6 @@ def predict_combination(gender, item_name, material, fit, length):
             'confidence': 75
         }
     
-    # 유사 조합 찾기 (3개 일치)
     similar = df[
         (df['성별'] == gender) &
         (df['아이템명'] == item_name) &
@@ -177,7 +222,6 @@ def predict_combination(gender, item_name, material, fit, length):
             'confidence': 60
         }
     
-    # 아이템만 일치
     similar = df[
         (df['성별'] == gender) &
         (df['아이템명'] == item_name)
@@ -221,12 +265,9 @@ if menu == "🎯 조합 예측 시뮬레이터":
             st.subheader("📋 조합 입력")
             
             gender = st.selectbox("성별", ["남성", "여성", "공용"])
-            
-            # 아이템 선택
             item_list = sorted(set(ITEM_MAPPING.values()))
             item_name = st.selectbox("아이템", item_list)
             
-            # 소재 선택 (기존 데이터에서)
             df_enriched = enrich_sales_data(st.session_state.sales_data)
             materials = sorted(df_enriched['소재명'].unique().tolist())
             if materials:
@@ -248,7 +289,6 @@ if menu == "🎯 조합 예측 시뮬레이터":
                 if result:
                     st.success("✅ 예측이 완료되었습니다!")
                     
-                    # 메트릭 표시
                     metric_col1, metric_col2, metric_col3 = st.columns(3)
                     with metric_col1:
                         st.metric("예상 판매량", f"{result['avg_quantity']:.0f}개")
@@ -257,7 +297,6 @@ if menu == "🎯 조합 예측 시뮬레이터":
                     with metric_col3:
                         st.metric("신뢰도", f"{result['confidence']}%")
                     
-                    # 상세 정보
                     st.divider()
                     
                     if result['type'] == 'exact':
@@ -265,15 +304,13 @@ if menu == "🎯 조합 예측 시뮬레이터":
                     elif result['type'] == 'similar_4':
                         st.info(f"📌 **유사 조합**: 성별, 아이템, 소재, 핏이 일치하는 {result['count']}건을 기반으로 예측했습니다.")
                     elif result['type'] == 'similar_3':
-                        st.warning(f"⚠️ **부분 일치**: 성별, 아이템, 소재가 일치하는 {result['count']}건을 기반으로 예측했습니다. 신뢰도가 낮습니다.")
+                        st.warning(f"⚠️ **부분 일치**: 성별, 아이템, 소재가 일치하는 {result['count']}건을 기반으로 예측했습니다.")
                     else:
-                        st.warning(f"⚠️ **낮은 신뢰도**: 성별과 아이템만 일치하는 {result['count']}건을 기반으로 예측했습니다. 더 많은 데이터가 필요합니다.")
+                        st.warning(f"⚠️ **낮은 신뢰도**: 성별과 아이템만 일치하는 {result['count']}건을 기반으로 예측했습니다.")
                     
-                    # 유사 조합 보기
                     st.divider()
                     st.markdown("#### 🔍 유사 조합 참고")
                     
-                    df_enriched = enrich_sales_data(st.session_state.sales_data)
                     similar_combos = df_enriched[
                         (df_enriched['성별'] == gender) &
                         (df_enriched['아이템명'] == item_name)
@@ -287,7 +324,7 @@ if menu == "🎯 조합 예측 시뮬레이터":
                         st.dataframe(similar_combos, use_container_width=True, hide_index=True)
                     
                 else:
-                    st.error("❌ 해당 조합에 대한 참고 데이터가 없습니다. 다른 조합을 시도하거나 더 많은 판매 데이터를 입력해주세요.")
+                    st.error("❌ 해당 조합에 대한 참고 데이터가 없습니다.")
 
 # ========================================
 # 2. 데이터 입력
@@ -297,17 +334,30 @@ elif menu == "📥 데이터 입력":
     
     tab1, tab2, tab3 = st.tabs(["📝 판매 데이터 입력", "📂 판매 데이터 업로드", "🧵 소재 데이터 관리"])
     
-    # 판매 데이터 수동 입력
     with tab1:
         st.subheader("판매 데이터 수동 입력")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            input_date = st.date_input("판매 날짜", datetime.now())
+            st.markdown("##### 주차 형식: `24'W1` (2024년 1주차) ~ `25'W52` (2025년 52주차)")
+            
+            # 드롭다운으로 주차 선택
+            week_options = get_week_options()
+            input_week = st.selectbox(
+                "주차 선택",
+                options=week_options,
+                index=len([w for w in week_options if w.startswith("24'")]),  # 25'W1을 기본값으로
+                help="24'W1 (2024년 1주차) ~ 25'W52 (2025년 52주차)"
+            )
+            
+            # 선택된 주차 정보 표시
+            if input_week:
+                year, week = parse_week(input_week)
+                st.success(f"✅ {year}년 {week}주차 선택됨")
+            
             input_code = st.text_input("품번", placeholder="예: TWSK10954")
             
-            # 품번 파싱 미리보기
             if input_code:
                 parsed = parse_item_code(input_code)
                 if parsed:
@@ -325,9 +375,9 @@ elif menu == "📥 데이터 입력":
             input_price = st.number_input("판매 금액 (원)", min_value=0, step=1000)
         
         if st.button("➕ 판매 데이터 추가", type="primary"):
-            if input_code and input_color and input_material:
+            if input_week and validate_week_format(input_week) and input_code and input_color and input_material:
                 new_row = pd.DataFrame([{
-                    '날짜': input_date,
+                    '주차': input_week,
                     '품번': input_code,
                     '컬러': input_color,
                     '소재명': input_material,
@@ -340,15 +390,14 @@ elif menu == "📥 데이터 입력":
                 st.success("✅ 판매 데이터가 추가되었습니다!")
                 st.rerun()
             else:
-                st.error("❌ 품번, 컬러, 소재명은 필수 입력 항목입니다.")
+                st.error("❌ 주차, 품번, 컬러, 소재명은 필수 입력 항목입니다.")
     
-    # 판매 데이터 Excel 업로드
     with tab2:
         st.subheader("판매 데이터 Excel 업로드")
         
-        # 템플릿 다운로드
-        template_sales = pd.DataFrame(columns=['날짜', '품번', '컬러', '소재명', '핏', '기장', '판매수량', '판매금액'])
-        template_sales.loc[0] = ['2024-12-01', 'TWRS10954', '블랙', '면100%', 'slim', 'crop', 120, 1200000]
+        template_sales = pd.DataFrame(columns=['주차', '품번', '컬러', '소재명', '핏', '기장', '판매수량', '판매금액'])
+        template_sales.loc[0] = ["25'W1", 'TWRS10954', '블랙', '면100%', 'slim', 'crop', 120, 1200000]
+        template_sales.loc[1] = ["25'W2", 'TMPO10953', '네이비', '폴리80%', 'regular', 'mid', 85, 850000]
         
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -361,28 +410,35 @@ elif menu == "📥 데이터 입력":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        st.info("📋 필수 열: 날짜, 품번, 컬러, 소재명, 핏, 기장, 판매수량, 판매금액")
+        st.info("📋 필수 열: 주차(형식: 25'W1), 품번, 컬러, 소재명, 핏, 기장, 판매수량, 판매금액")
         
         uploaded_sales = st.file_uploader("Excel 파일 선택", type=['xlsx', 'xls'], key="sales_upload")
         
         if uploaded_sales:
             try:
                 df_upload = pd.read_excel(uploaded_sales)
-                st.write("📊 업로드된 데이터 미리보기:")
-                st.dataframe(df_upload.head(10), use_container_width=True)
                 
-                if st.button("✅ 판매 데이터 적용", type="primary"):
-                    st.session_state.sales_data = pd.concat([st.session_state.sales_data, df_upload], ignore_index=True)
-                    st.success(f"✅ {len(df_upload)}개의 판매 데이터가 추가되었습니다!")
-                    st.rerun()
+                invalid_weeks = []
+                for idx, week in enumerate(df_upload['주차']):
+                    if not validate_week_format(str(week)):
+                        invalid_weeks.append(f"행 {idx+2}: {week}")
+                
+                if invalid_weeks:
+                    st.error(f"❌ 올바르지 않은 주차 형식:\n" + "\n".join(invalid_weeks[:5]))
+                else:
+                    st.write("📊 업로드된 데이터 미리보기:")
+                    st.dataframe(df_upload.head(10), use_container_width=True)
+                    
+                    if st.button("✅ 판매 데이터 적용", type="primary"):
+                        st.session_state.sales_data = pd.concat([st.session_state.sales_data, df_upload], ignore_index=True)
+                        st.success(f"✅ {len(df_upload)}개의 판매 데이터가 추가되었습니다!")
+                        st.rerun()
             except Exception as e:
                 st.error(f"❌ 파일 읽기 오류: {e}")
     
-    # 소재 데이터 관리
     with tab3:
         st.subheader("소재 마스터 데이터 관리")
         
-        # 템플릿 다운로드
         template_material = pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
         template_material.loc[0] = ['면100%', '태광섬유', '면100%', 180, 0.6, '고밀도']
         
@@ -412,7 +468,6 @@ elif menu == "📥 데이터 입력":
             except Exception as e:
                 st.error(f"❌ 파일 읽기 오류: {e}")
         
-        # 현재 소재 데이터 표시
         if not st.session_state.material_data.empty:
             st.divider()
             st.markdown("#### 📋 현재 소재 마스터 데이터")
@@ -429,7 +484,6 @@ elif menu == "📊 대시보드":
     else:
         df = enrich_sales_data(st.session_state.sales_data)
         
-        # KPI
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("총 판매수량", f"{df['판매수량'].sum():,}개")
@@ -442,7 +496,6 @@ elif menu == "📊 대시보드":
         
         st.divider()
         
-        # 차트
         col1, col2 = st.columns(2)
         
         with col1:
@@ -477,22 +530,35 @@ elif menu == "📊 대시보드":
             fig4.update_layout(showlegend=False, xaxis_title="판매수량", yaxis_title="")
             st.plotly_chart(fig4, use_container_width=True)
         
-        # 시즌/연도 분석
         st.divider()
+        st.subheader("📅 주차별 판매 추이")
+        
+        df_sorted = df.sort_values(['주차_연도', '주차_번호'])
+        weekly_sales = df_sorted.groupby('주차').agg({
+            '판매수량': 'sum',
+            '판매금액': 'sum'
+        }).reset_index()
+        
+        fig5 = go.Figure()
+        fig5.add_trace(go.Scatter(x=weekly_sales['주차'], y=weekly_sales['판매수량'],
+                                 mode='lines+markers', name='판매수량'))
+        fig5.update_layout(xaxis_title="주차", yaxis_title="판매수량", hovermode='x unified')
+        st.plotly_chart(fig5, use_container_width=True)
+        
         col5, col6 = st.columns(2)
         
         with col5:
             st.subheader("🌸 시즌별 판매")
             season_sales = df.groupby('시즌')['판매수량'].sum()
-            fig5 = px.pie(values=season_sales.values, names=season_sales.index, hole=0.4)
-            st.plotly_chart(fig5, use_container_width=True)
+            fig6 = px.pie(values=season_sales.values, names=season_sales.index, hole=0.4)
+            st.plotly_chart(fig6, use_container_width=True)
         
         with col6:
             st.subheader("📅 연도별 판매")
             year_sales = df.groupby('연도')['판매수량'].sum().sort_index()
-            fig6 = px.line(x=year_sales.index, y=year_sales.values, markers=True)
-            fig6.update_layout(xaxis_title="연도", yaxis_title="판매수량")
-            st.plotly_chart(fig6, use_container_width=True)
+            fig7 = px.line(x=year_sales.index, y=year_sales.values, markers=True)
+            fig7.update_layout(xaxis_title="연도", yaxis_title="판매수량")
+            st.plotly_chart(fig7, use_container_width=True)
 
 # ========================================
 # 4. 조합 성과 랭킹
@@ -505,7 +571,6 @@ elif menu == "🏆 조합 성과 랭킹":
     else:
         df = enrich_sales_data(st.session_state.sales_data)
         
-        # 조합 생성
         df['조합'] = df['성별'] + ' / ' + df['아이템명'] + ' / ' + df['소재명'] + ' / ' + df['핏'] + ' / ' + df['기장']
         
         combo_stats = df.groupby('조합').agg({
@@ -516,7 +581,6 @@ elif menu == "🏆 조합 성과 랭킹":
         combo_stats.columns = ['총판매수량', '평균판매수량', '판매횟수', '총판매금액', '평균판매금액']
         combo_stats = combo_stats.reset_index()
         
-        # 분석 기준 선택
         metric = st.radio("분석 기준", ["총판매수량", "평균판매수량", "총판매금액", "평균판매금액"], horizontal=True)
         top_n = st.slider("표시할 조합 수", 5, 20, 10)
         
@@ -544,7 +608,6 @@ elif menu == "🏆 조합 성과 랭킹":
             
             st.dataframe(bottom_combos, use_container_width=True, hide_index=True)
         
-        # 히트맵
         st.divider()
         st.subheader("🔥 조합 히트맵 분석")
         
@@ -570,7 +633,6 @@ elif menu == "🧵 소재 분석":
     else:
         df = enrich_sales_data(st.session_state.sales_data)
         
-        # 소재별 집계
         material_stats = df.groupby('소재명').agg({
             '판매수량': ['sum', 'mean', 'count'],
             '판매금액': ['sum', 'mean'],
@@ -580,13 +642,11 @@ elif menu == "🧵 소재 분석":
         material_stats.columns = ['총판매수량', '평균판매수량', '판매횟수', '총판매금액', '평균판매금액', 'SKU수']
         material_stats = material_stats.reset_index().sort_values('총판매수량', ascending=False)
         
-        # 전체 통계
         st.subheader("📊 소재별 성과 요약")
         st.dataframe(material_stats, use_container_width=True, hide_index=True)
         
         st.divider()
         
-        # 차트
         col1, col2 = st.columns(2)
         
         with col1:
@@ -603,7 +663,6 @@ elif menu == "🧵 소재 분석":
             fig2.update_layout(showlegend=False, yaxis={'categoryorder':'total ascending'})
             st.plotly_chart(fig2, use_container_width=True)
         
-        # 소재 상세 분석
         st.divider()
         st.subheader("🔍 소재별 상세 분석")
         
@@ -620,7 +679,6 @@ elif menu == "🧵 소재 분석":
             with col5:
                 st.metric("사용 SKU", f"{material_df['품번'].nunique()}개")
             
-            # 해당 소재의 아이템별 성과
             st.markdown(f"#### {selected_material} 사용 아이템별 성과")
             item_perf = material_df.groupby('아이템명')['판매수량'].sum().sort_values(ascending=False)
             fig3 = px.bar(x=item_perf.values, y=item_perf.index, orientation='h',
@@ -628,7 +686,6 @@ elif menu == "🧵 소재 분석":
             fig3.update_layout(showlegend=False, xaxis_title="판매수량", yaxis_title="")
             st.plotly_chart(fig3, use_container_width=True)
             
-            # 소재 마스터 정보
             if not st.session_state.material_data.empty:
                 material_info = st.session_state.material_data[
                     st.session_state.material_data['소재명'] == selected_material
@@ -653,7 +710,6 @@ elif menu == "💾 데이터 관리":
         with col1:
             st.markdown("#### 판매 데이터")
             if not st.session_state.sales_data.empty:
-                # Excel 다운로드
                 buffer1 = io.BytesIO()
                 with pd.ExcelWriter(buffer1, engine='openpyxl') as writer:
                     st.session_state.sales_data.to_excel(writer, index=False, sheet_name='판매데이터')
@@ -665,7 +721,6 @@ elif menu == "💾 데이터 관리":
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
-                # CSV 다운로드
                 csv1 = st.session_state.sales_data.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label="📥 판매 데이터 CSV 다운로드",
@@ -714,7 +769,7 @@ elif menu == "💾 데이터 관리":
             else:
                 st.warning("편집할 판매 데이터가 없습니다.")
         
-        else:  # 소재 데이터
+        else:
             if not st.session_state.material_data.empty:
                 st.info(f"총 {len(st.session_state.material_data)}개의 소재 데이터")
                 
@@ -740,7 +795,7 @@ elif menu == "💾 데이터 관리":
         with col1:
             if st.button("🗑️ 판매 데이터 전체 삭제", type="secondary"):
                 st.session_state.sales_data = pd.DataFrame(columns=[
-                    '날짜', '품번', '컬러', '소재명', '핏', '기장', '판매수량', '판매금액'
+                    '주차', '품번', '컬러', '소재명', '핏', '기장', '판매수량', '판매금액'
                 ])
                 st.success("✅ 판매 데이터가 삭제되었습니다.")
                 st.rerun()
@@ -762,11 +817,17 @@ st.sidebar.info(f"""
 - 판매 데이터: {len(st.session_state.sales_data)}건
 - 소재 데이터: {len(st.session_state.material_data)}건
 
-💡 **사용 팁**
+💡 **주차 형식 안내**
+- 24'W1 = 2024년 1주차
+- 24'W52 = 2024년 52주차
+- 25'W1 = 2025년 1주차
+- 25'W52 = 2025년 52주차
+
+⚠️ **중요 안내**
+- 입력 가능 범위: 24'W1 ~ 25'W52
 - 매일 Excel로 백업하세요
-- 품번 형식을 정확히 입력하세요
-- 100건 이상 데이터 축적 시 예측 정확도 향상
+- 브라우저 종료 시 데이터 소멸
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2024 세르지오타키니 판매분석시스템 v1.0")
+st.sidebar.caption("© 2024 세르지오타키니 판매분석시스템 v1.1")
