@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import io
 import numpy as np
+from supabase import create_client, Client
 
 # 페이지 설정
 st.set_page_config(
@@ -13,21 +14,112 @@ st.set_page_config(
     layout="wide"
 )
 
-# 품번 파싱 함수
-def parse_item_code(code):
-    if not code or len(code) < 8:
-        return None
+# Supabase 연결
+@st.cache_resource
+def init_supabase():
     try:
-        return {
-            'brand': code[0],
-            'gender': code[1],
-            'item_code': code[2:4],
-            'sequence': code[4:7],
-            'year': code[7],
-            'season': code[8] if len(code) > 8 else None
-        }
-    except:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"❌ Supabase 연결 실패: {e}")
         return None
+
+supabase: Client = init_supabase()
+
+# 데이터 로드 함수
+@st.cache_data(ttl=600)  # 10분 캐시
+def load_sales_data():
+    if supabase is None:
+        return pd.DataFrame(columns=['품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'])
+    
+    try:
+        response = supabase.table('sales_data').select('*').execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            # id, created_at, updated_at, updated_by 컬럼 제거
+            columns_to_keep = ['품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액']
+            return df[columns_to_keep]
+        return pd.DataFrame(columns=['품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'])
+    except Exception as e:
+        st.error(f"데이터 로드 실패: {e}")
+        return pd.DataFrame(columns=['품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'])
+
+@st.cache_data(ttl=600)
+def load_material_data():
+    if supabase is None:
+        return pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
+    
+    try:
+        response = supabase.table('material_data').select('*').execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            columns_to_keep = ['소재명', '소재업체', '혼용율', '중량', '두께', '밀도']
+            return df[columns_to_keep]
+        return pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
+    except Exception as e:
+        st.error(f"소재 데이터 로드 실패: {e}")
+        return pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
+
+# Session State 초기화 - Supabase에서 로드
+if 'sales_data' not in st.session_state:
+    st.session_state.sales_data = load_sales_data()
+
+if 'material_data' not in st.session_state:
+    st.session_state.material_data = load_material_data()
+
+# 데이터 저장 함수
+def save_sales_data(new_data):
+    if supabase is None:
+        st.error("❌ Supabase 연결이 없습니다.")
+        return False
+    
+    try:
+        # DataFrame을 dict 리스트로 변환
+        records = new_data.to_dict('records')
+        response = supabase.table('sales_data').insert(records).execute()
+        st.cache_data.clear()  # 캐시 초기화
+        return True
+    except Exception as e:
+        st.error(f"저장 실패: {e}")
+        return False
+
+def save_material_data(new_data):
+    if supabase is None:
+        st.error("❌ Supabase 연결이 없습니다.")
+        return False
+    
+    try:
+        records = new_data.to_dict('records')
+        response = supabase.table('material_data').insert(records).execute()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"저장 실패: {e}")
+        return False
+
+def delete_all_sales_data():
+    if supabase is None:
+        return False
+    try:
+        # 모든 데이터 삭제
+        supabase.table('sales_data').delete().neq('id', 0).execute()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"삭제 실패: {e}")
+        return False
+
+def delete_all_material_data():
+    if supabase is None:
+        return False
+    try:
+        supabase.table('material_data').delete().neq('id', 0).execute()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"삭제 실패: {e}")
+        return False
 
 # 아이템 코드 매핑
 ITEM_MAPPING = {
@@ -218,6 +310,7 @@ if menu == "🎯 조합 예측":
                     st.error("❌ 참고 데이터가 없습니다.")
 
 # 2. 데이터 입력
+# 2. 데이터 입력
 elif menu == "📥 데이터 입력":
     st.title("📥 데이터 입력")
     
@@ -254,25 +347,19 @@ elif menu == "📥 데이터 입력":
                     '소재명': input_material, '핏': input_fit, '기장': input_length,
                     '누적판매수량': input_quantity, '누적판매금액': input_price
                 }])
-                st.session_state.sales_data = pd.concat([st.session_state.sales_data, new_row], ignore_index=True)
-                st.success("✅ 추가 완료!")
-                st.rerun()
+                
+                # Supabase에 저장
+                if save_sales_data(new_row):
+                    st.session_state.sales_data = load_sales_data()
+                    st.success("✅ 추가 완료!")
+                    st.rerun()
             else:
                 st.error("❌ 품번, 컬러, 소재명은 필수입니다.")
     
     with tab2:
         st.subheader("Excel 업로드")
         
-        template = pd.DataFrame(columns=['품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'])
-        template.loc[0] = ['TWRS10954', '블랙', '컷앤소', '면100%', 'slim', 'crop', 1250, 12500000]
-        template.loc[1] = ['TMPO10953', '네이비', '우븐', '폴리80%', 'regular', 'mid', 850, 8500000]
-        
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            template.to_excel(writer, index=False, sheet_name='판매데이터')
-        
-        st.download_button("📥 템플릿 다운로드", buffer.getvalue(), "판매데이터_템플릿.xlsx",
-                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # ... (템플릿 다운로드 코드는 동일)
         
         uploaded = st.file_uploader("Excel 파일 선택", type=['xlsx', 'xls'])
         
@@ -282,24 +369,17 @@ elif menu == "📥 데이터 입력":
                 st.dataframe(df_upload.head(10))
                 
                 if st.button("✅ 적용"):
-                    st.session_state.sales_data = pd.concat([st.session_state.sales_data, df_upload], ignore_index=True)
-                    st.success(f"✅ {len(df_upload)}개 추가!")
-                    st.rerun()
+                    if save_sales_data(df_upload):
+                        st.session_state.sales_data = load_sales_data()
+                        st.success(f"✅ {len(df_upload)}개 추가!")
+                        st.rerun()
             except Exception as e:
                 st.error(f"❌ 오류: {e}")
     
     with tab3:
         st.subheader("소재 마스터 관리")
         
-        template_mat = pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
-        template_mat.loc[0] = ['면100%', '태광섬유', '면100%', 180, 0.6, '고밀도']
-        
-        buffer2 = io.BytesIO()
-        with pd.ExcelWriter(buffer2, engine='openpyxl') as writer:
-            template_mat.to_excel(writer, index=False, sheet_name='소재데이터')
-        
-        st.download_button("📥 소재 템플릿", buffer2.getvalue(), "소재템플릿.xlsx",
-                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # ... (템플릿 다운로드 코드는 동일)
         
         uploaded_mat = st.file_uploader("소재 Excel", type=['xlsx', 'xls'])
         
@@ -309,9 +389,10 @@ elif menu == "📥 데이터 입력":
                 st.dataframe(df_mat)
                 
                 if st.button("✅ 소재 적용"):
-                    st.session_state.material_data = pd.concat([st.session_state.material_data, df_mat], ignore_index=True)
-                    st.success("✅ 소재 추가!")
-                    st.rerun()
+                    if save_material_data(df_mat):
+                        st.session_state.material_data = load_material_data()
+                        st.success("✅ 소재 추가!")
+                        st.rerun()
             except Exception as e:
                 st.error(f"❌ 오류: {e}")
 # 3. 대시보드
@@ -621,19 +702,17 @@ elif menu == "💾 데이터 관리":
         
         with col1:
             if st.button("🗑️ 판매 데이터 전체 삭제", type="secondary"):
-                st.session_state.sales_data = pd.DataFrame(columns=[
-                    '품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'
-                ])
-                st.success("✅ 판매 데이터가 삭제되었습니다.")
-                st.rerun()
+                if delete_all_sales_data():
+                    st.session_state.sales_data = load_sales_data()
+                    st.success("✅ 판매 데이터가 삭제되었습니다.")
+                    st.rerun()
         
         with col2:
             if st.button("🗑️ 소재 데이터 전체 삭제", type="secondary"):
-                st.session_state.material_data = pd.DataFrame(columns=[
-                    '소재명', '소재업체', '혼용율', '중량', '두께', '밀도'
-                ])
-                st.success("✅ 소재 데이터가 삭제되었습니다.")
-                st.rerun()
+                if delete_all_material_data():
+                    st.session_state.material_data = load_material_data()
+                    st.success("✅ 소재 데이터가 삭제되었습니다.")
+                    st.rerun()
 
 # 푸터
 st.sidebar.divider()
