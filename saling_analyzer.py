@@ -61,13 +61,6 @@ def load_material_data():
         st.error(f"소재 데이터 로드 실패: {e}")
         return pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
 
-# Session State 초기화 - Supabase에서 로드
-if 'sales_data' not in st.session_state:
-    st.session_state.sales_data = load_sales_data()
-
-if 'material_data' not in st.session_state:
-    st.session_state.material_data = load_material_data()
-
 # 데이터 저장 함수
 def save_sales_data(new_data):
     if supabase is None:
@@ -121,6 +114,32 @@ def delete_all_material_data():
         st.error(f"삭제 실패: {e}")
         return False
 
+# 품번 파싱 함수 (개선 버전)
+def parse_item_code(code):
+    """품번을 파싱하여 각 부분을 추출합니다."""
+    if not code:
+        return None
+    
+    # 문자열로 변환 (숫자로 입력된 경우 대비)
+    code = str(code).strip()
+    
+    # 최소 길이 체크 (year까지 필수: 8자리)
+    if len(code) < 8:
+        return None
+    
+    try:
+        return {
+            'brand': code[0] if len(code) > 0 else None,
+            'gender': code[1] if len(code) > 1 else None,
+            'item_code': code[2:4] if len(code) >= 4 else None,
+            'sequence': code[4:7] if len(code) >= 7 else None,
+            'year': code[7] if len(code) >= 8 else None,
+            'season': code[8] if len(code) >= 9 else None
+        }
+    except Exception as e:
+        st.warning(f"⚠️ 품번 파싱 실패: {code} - {str(e)}")
+        return None
+
 # 아이템 코드 매핑
 ITEM_MAPPING = {
     'DJ': '다운점퍼', 'DV': '다운베스트', 'JK': '자켓', 'JP': '점퍼',
@@ -150,16 +169,12 @@ FIT_OPTIONS = ['slim', 'regular', 'semi-over', 'over']
 LENGTH_OPTIONS = ['Crop', 'Mid', 'Long', 'Regular', 'Semi-Crop', 'Short']
 MANUFACTURING_OPTIONS = ['컷앤소', '우븐', '스웨터']
 
-# Session State 초기화
+# Session State 초기화 - Supabase에서 로드
 if 'sales_data' not in st.session_state:
-    st.session_state.sales_data = pd.DataFrame(columns=[
-        '품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'
-    ])
+    st.session_state.sales_data = load_sales_data()
 
 if 'material_data' not in st.session_state:
-    st.session_state.material_data = pd.DataFrame(columns=[
-        '소재명', '소재업체', '혼용율', '중량', '두께', '밀도'
-    ])
+    st.session_state.material_data = load_material_data()
 
 # 데이터 처리 함수
 def enrich_sales_data(df):
@@ -310,7 +325,6 @@ if menu == "🎯 조합 예측":
                     st.error("❌ 참고 데이터가 없습니다.")
 
 # 2. 데이터 입력
-# 2. 데이터 입력
 elif menu == "📥 데이터 입력":
     st.title("📥 데이터 입력")
     
@@ -328,7 +342,11 @@ elif menu == "📥 데이터 입력":
             if input_code:
                 parsed = parse_item_code(input_code)
                 if parsed:
-                    st.success(f"✅ {GENDER_MAPPING.get(parsed['gender'])} / {ITEM_MAPPING.get(parsed['item_code'])}")
+                    gender_text = GENDER_MAPPING.get(parsed['gender'], '알수없음')
+                    item_text = ITEM_MAPPING.get(parsed['item_code'], '알수없음')
+                    st.success(f"✅ {gender_text} / {item_text}")
+                else:
+                    st.warning("⚠️ 품번 형식을 확인해주세요 (최소 8자리)")
             
             input_color = st.text_input("컬러", placeholder="블랙")
             input_manufacturing = st.selectbox("제조방식", MANUFACTURING_OPTIONS)
@@ -359,7 +377,16 @@ elif menu == "📥 데이터 입력":
     with tab2:
         st.subheader("Excel 업로드")
         
-        # ... (템플릿 다운로드 코드는 동일)
+        template = pd.DataFrame(columns=['품번', '컬러', '제조방식', '소재명', '핏', '기장', '누적판매수량', '누적판매금액'])
+        template.loc[0] = ['TWRS10954', '블랙', '컷앤소', '면100%', 'slim', 'Crop', 1250, 12500000]
+        template.loc[1] = ['TMPO10953', '네이비', '우븐', '폴리80%', 'regular', 'Mid', 850, 8500000]
+        
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            template.to_excel(writer, index=False, sheet_name='판매데이터')
+        
+        st.download_button("📥 템플릿 다운로드", buffer.getvalue(), "판매데이터_템플릿.xlsx",
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
         uploaded = st.file_uploader("Excel 파일 선택", type=['xlsx', 'xls'])
         
@@ -379,7 +406,15 @@ elif menu == "📥 데이터 입력":
     with tab3:
         st.subheader("소재 마스터 관리")
         
-        # ... (템플릿 다운로드 코드는 동일)
+        template_mat = pd.DataFrame(columns=['소재명', '소재업체', '혼용율', '중량', '두께', '밀도'])
+        template_mat.loc[0] = ['면100%', '태광섬유', '면100%', 180, 0.6, '고밀도']
+        
+        buffer2 = io.BytesIO()
+        with pd.ExcelWriter(buffer2, engine='openpyxl') as writer:
+            template_mat.to_excel(writer, index=False, sheet_name='소재데이터')
+        
+        st.download_button("📥 소재 템플릿", buffer2.getvalue(), "소재템플릿.xlsx",
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
         uploaded_mat = st.file_uploader("소재 Excel", type=['xlsx', 'xls'])
         
@@ -395,6 +430,7 @@ elif menu == "📥 데이터 입력":
                         st.rerun()
             except Exception as e:
                 st.error(f"❌ 오류: {e}")
+
 # 3. 대시보드
 elif menu == "📊 대시보드":
     st.title("📊 판매 분석 대시보드")
@@ -604,6 +640,7 @@ elif menu == "🧵 소재 분석":
                 if not material_info.empty:
                     st.markdown("#### 📋 소재 상세 정보")
                     st.dataframe(material_info, use_container_width=True, hide_index=True)
+
 # 6. 데이터 관리
 elif menu == "💾 데이터 관리":
     st.title("💾 데이터 관리")
@@ -721,19 +758,19 @@ st.sidebar.info(f"""
 - 판매 데이터: {len(st.session_state.sales_data)}건
 - 소재 데이터: {len(st.session_state.material_data)}건
 
-💡 **데이터 입력 방식**
-- 누적 판매 방식 사용
-- 현재까지의 총 판매량 입력
+💡 **데이터 저장**
+- Supabase 클라우드에 영구 저장
+- 브라우저 종료해도 데이터 유지
 
 🏭 **제조방식**
 - 컷앤소 (Cut & Sewn)
 - 우븐 (Woven)
 - 스웨터 (Sweater/Knit)
 
-⚠️ **중요 안내**
-- 매일 Excel로 백업하세요
-- 브라우저 종료 시 데이터 소멸
+🔄 **새로고침**
+- 캐시 시간: 10분
+- 최신 데이터는 자동 동기화
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2024 세르지오타키니 판매분석시스템 v2.0")
+st.sidebar.caption("© 2024 세르지오타키니 판매분석시스템 v2.1")
