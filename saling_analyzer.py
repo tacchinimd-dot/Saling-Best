@@ -38,6 +38,17 @@ def init_supabase():
 supabase: Client = init_supabase()
 
 # =========================
+# 유틸: JSON-safe 변환 (NaN/Inf 제거)
+# =========================
+def make_json_safe_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Supabase insert(JSON)에서 터지는 NaN/Inf를 None으로 치환"""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    out = out.replace([np.nan, np.inf, -np.inf], None)
+    return out
+
+# =========================
 # 유틸: 상관/구간 분석
 # =========================
 def _bin_series(s: pd.Series, method="equal_width", bins=4):
@@ -72,7 +83,6 @@ def load_sales_data():
                 if c not in df.columns:
                     df[c] = None
             df = df[SALES_COLS].copy()
-            # 숫자 보정
             for col in ["가격", "당시즌판매수량", "당시즌판매액"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
             return df
@@ -93,10 +103,8 @@ def load_material_data():
                 if c not in df.columns:
                     df[c] = None
             df = df[MATERIAL_COLS].copy()
-            # 숫자 보정
             for col in ["혼용율", "중량", "밀도", "GU", "RA", "SA"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-            # 두께는 문자열 유지
             df["두께"] = df["두께"].astype(str)
             return df
         return pd.DataFrame(columns=MATERIAL_COLS)
@@ -112,18 +120,25 @@ def save_sales_data(new_df: pd.DataFrame) -> bool:
         st.error("❌ Supabase 연결이 없습니다.")
         return False
     try:
+        df = new_df.copy()
+
+        # 컬럼 보정
         for c in SALES_COLS:
-            if c not in new_df.columns:
-                new_df[c] = None
-        # 숫자 변환
+            if c not in df.columns:
+                df[c] = None
+
+        # 숫자형 보정
         for col in ["가격", "당시즌판매수량", "당시즌판매액"]:
-            new_df[col] = pd.to_numeric(new_df[col], errors="coerce").fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # ✅ NaN/inf를 JSON 가능한 값(None)으로 변환
-new_df = new_df.replace([np.nan, np.inf, -np.inf], None)
+        # ✅ JSON-safe (NaN/Inf 제거)  ← (기존 코드에서 들여쓰기 깨져 SyntaxError 원인)
+        df = make_json_safe_df(df)
 
+        records = df[SALES_COLS].to_dict("records")
+        if not records:
+            st.warning("저장할 데이터가 없습니다.")
+            return False
 
-        records = new_df[SALES_COLS].to_dict("records")
         supabase.table("sales_data").insert(records).execute()
         st.cache_data.clear()
         return True
@@ -136,17 +151,25 @@ def save_material_data(new_df: pd.DataFrame) -> bool:
         st.error("❌ Supabase 연결이 없습니다.")
         return False
     try:
+        df = new_df.copy()
+
         for c in MATERIAL_COLS:
-            if c not in new_df.columns:
-                new_df[c] = None
-        # 숫자 변환
+            if c not in df.columns:
+                df[c] = None
+
         for col in ["혼용율", "중량", "밀도", "GU", "RA", "SA"]:
-            new_df[col] = pd.to_numeric(new_df[col], errors="coerce").fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # 두께 문자열 유지
-        new_df["두께"] = new_df["두께"].astype(str)
+        df["두께"] = df["두께"].astype(str)
 
-        records = new_df[MATERIAL_COLS].to_dict("records")
+        # ✅ JSON-safe
+        df = make_json_safe_df(df)
+
+        records = df[MATERIAL_COLS].to_dict("records")
+        if not records:
+            st.warning("저장할 데이터가 없습니다.")
+            return False
+
         supabase.table("material_data").insert(records).execute()
         st.cache_data.clear()
         return True
@@ -255,7 +278,6 @@ def predict_combination(gender, item_name, manufacturing, material, fit, length)
 
     df = enrich_sales_data(st.session_state.sales_data)
 
-    # 완전 일치
     exact = df[
         (df["성별"] == gender) &
         (df["아이템명"] == item_name) &
@@ -273,7 +295,6 @@ def predict_combination(gender, item_name, manufacturing, material, fit, length)
             "confidence": 95
         }
 
-    # 5개 일치
     similar = df[
         (df["성별"] == gender) &
         (df["아이템명"] == item_name) &
@@ -288,7 +309,6 @@ def predict_combination(gender, item_name, manufacturing, material, fit, length)
                 "count": len(similar),
                 "confidence": 80}
 
-    # 4개 일치
     similar = df[
         (df["성별"] == gender) &
         (df["아이템명"] == item_name) &
@@ -302,7 +322,6 @@ def predict_combination(gender, item_name, manufacturing, material, fit, length)
                 "count": len(similar),
                 "confidence": 65}
 
-    # 3개 일치
     similar = df[
         (df["성별"] == gender) &
         (df["아이템명"] == item_name) &
@@ -464,7 +483,7 @@ elif menu == "📥 데이터 입력":
         if uploaded:
             try:
                 df_upload = pd.read_excel(uploaded)
-                df_upload = df_upload.replace([np.nan, np.inf, -np.inf], None)
+                df_upload = make_json_safe_df(df_upload)
                 st.dataframe(df_upload.head(10), use_container_width=True)
 
                 missing = [c for c in SALES_COLS if c not in df_upload.columns]
@@ -692,7 +711,6 @@ elif menu == "🧵 소재 분석":
             fig4 = px.pie(values=manu_perf.values, names=manu_perf.index, hole=0.4)
             st.plotly_chart(fig4, use_container_width=True)
 
-            # 소재 마스터 정보
             if not st.session_state.material_data.empty:
                 info = st.session_state.material_data[st.session_state.material_data["소재명"] == selected_material]
                 if not info.empty:
@@ -701,7 +719,6 @@ elif menu == "🧵 소재 분석":
                 else:
                     st.info("소재 마스터에 해당 소재명이 없습니다(소재명 불일치/미등록).")
 
-        # ====== GU/RA/SA 상관/구간 분석 (전체/선택 범위) ======
         st.divider()
         st.subheader("📈 GU/RA/SA ↔ 판매 상관/구간 분석 (소재 마스터 조인)")
 
@@ -711,11 +728,9 @@ elif menu == "🧵 소재 분석":
             sales_df = st.session_state.sales_data.copy()
             mat_df = st.session_state.material_data.copy()
 
-            # 숫자형 변환(판매)
             sales_df["당시즌판매수량"] = pd.to_numeric(sales_df["당시즌판매수량"], errors="coerce").fillna(0)
             sales_df["당시즌판매액"] = pd.to_numeric(sales_df["당시즌판매액"], errors="coerce").fillna(0)
 
-            # 숫자형 변환(GU/RA/SA)
             for c in ["GU", "RA", "SA"]:
                 mat_df[c] = pd.to_numeric(mat_df[c], errors="coerce")
 
@@ -737,7 +752,6 @@ elif menu == "🧵 소재 분석":
             if merged_scope.empty:
                 st.warning("선택 범위에 분석할 데이터가 없습니다.")
             else:
-                # 1) 상관분석
                 st.markdown("### 1) 상관분석 (Pearson)")
                 target_metric = st.selectbox("판매 지표", ["당시즌판매수량", "당시즌판매액"], index=0)
 
@@ -749,7 +763,6 @@ elif menu == "🧵 소재 분석":
 
                 st.dataframe(pd.DataFrame(corr_rows), use_container_width=True, hide_index=True)
 
-                # 2) 구간 분석
                 st.markdown("### 2) 구간(빈) 비교 분석")
                 bin_metric = st.selectbox("구간화할 물성 지표", ["GU", "RA", "SA"], index=0)
                 bin_method = st.radio("구간화 방식", ["equal_width", "quantile"], horizontal=True)
@@ -787,7 +800,6 @@ elif menu == "🧵 소재 분석":
                                            title=f"{bin_metric} 구간별 평균 당시즌판매액")
                             st.plotly_chart(fig_a, use_container_width=True)
 
-                # 3) 소재 단위 요약
                 st.markdown("### 3) (옵션) 소재 단위 요약")
                 if st.checkbox("소재명 단위로 요약 보기", value=False):
                     mat_level = merged_scope.groupby("소재명").agg(
@@ -859,7 +871,11 @@ elif menu == "💾 데이터 관리":
 
         if data_type == "판매 데이터":
             if not st.session_state.sales_data.empty:
-                edited_sales = st.data_editor(st.session_state.sales_data[SALES_COLS], use_container_width=True, num_rows="dynamic")
+                edited_sales = st.data_editor(
+                    st.session_state.sales_data[SALES_COLS],
+                    use_container_width=True,
+                    num_rows="dynamic"
+                )
                 if st.button("💾 (로컬) 판매 변경사항 반영"):
                     st.session_state.sales_data = edited_sales
                     st.success("✅ 로컬 변경사항 반영 완료 (DB 업데이트는 아님)")
@@ -868,7 +884,11 @@ elif menu == "💾 데이터 관리":
                 st.warning("편집할 판매 데이터가 없습니다.")
         else:
             if not st.session_state.material_data.empty:
-                edited_mat = st.data_editor(st.session_state.material_data[MATERIAL_COLS], use_container_width=True, num_rows="dynamic")
+                edited_mat = st.data_editor(
+                    st.session_state.material_data[MATERIAL_COLS],
+                    use_container_width=True,
+                    num_rows="dynamic"
+                )
                 if st.button("💾 (로컬) 소재 변경사항 반영"):
                     st.session_state.material_data = edited_mat
                     st.success("✅ 로컬 변경사항 반영 완료 (DB 업데이트는 아님)")
