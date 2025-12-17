@@ -419,23 +419,47 @@ if menu == "🎯 조합 예측":
         with col2:
             st.subheader("📊 예측 결과")
             if predict_btn:
-                result = predict_combination(gender, item_name, manufacturing, material, fit, length)
-                if result:
-                    st.success("✅ 예측 완료!")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("예상 당시즌판매수량", f"{result['avg_quantity']:.0f}개")
-                    c2.metric("예상 당시즌판매액", f"{result['avg_price']:,.0f}원")
-                    c3.metric("신뢰도", f"{result['confidence']}%")
-                    st.divider()
-                    label = {
-                        "exact": "✨ 완전 일치",
-                        "similar_5": "📌 유사 조합(5개 일치)",
-                        "similar_4": "⚠️ 부분 일치(4개)",
-                        "similar_3": "⚠️ 낮은 신뢰도(3개)"
-                    }.get(result["type"], result["type"])
-                    st.info(f"{label}: {result['count']}건 기반")
-                else:
-                    st.error("❌ 참고 데이터가 없습니다.")
+if predict_btn:
+    import requests
+
+    fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
+    if not fn_predict:
+        st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
+    else:
+        payload = {
+            "gender": gender,
+            "item_name": item_name,
+            "manufacturing": manufacturing,
+            "material": material,
+            "fit": fit,
+            "length": length,
+        }
+
+        try:
+            r = requests.post(fn_predict, json=payload, timeout=120)
+            out = r.json()
+        except Exception as e:
+            st.error(f"AI 예측 호출 실패: {e}")
+            out = None
+
+        if not out or not out.get("ok"):
+            st.error(out.get("error", "AI 예측 실패(응답 형식 오류)"))
+        else:
+            res = out["result"]
+            st.success("✅ AI 예측 완료")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("예상 당시즌판매수량", f"{float(res.get('pred_qty', 0)):.0f}개")
+            c2.metric("예상 당시즌판매액", f"{float(res.get('pred_amt', 0)):,.0f}원")
+            c3.metric("신뢰도", f"{float(res.get('confidence', 0)):.0f}%")
+
+            st.markdown("#### 근거")
+            st.write(res.get("rationale", ""))
+
+            warnings = res.get("warnings", [])
+            if warnings:
+                st.warning(" / ".join(warnings))
+
 
 if predict_btn:
     import requests
