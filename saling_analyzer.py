@@ -119,6 +119,10 @@ def save_sales_data(new_df: pd.DataFrame) -> bool:
         for col in ["가격", "당시즌판매수량", "당시즌판매액"]:
             new_df[col] = pd.to_numeric(new_df[col], errors="coerce").fillna(0)
 
+        # ✅ NaN/inf를 JSON 가능한 값(None)으로 변환
+new_df = new_df.replace([np.nan, np.inf, -np.inf], None)
+
+
         records = new_df[SALES_COLS].to_dict("records")
         supabase.table("sales_data").insert(records).execute()
         st.cache_data.clear()
@@ -460,6 +464,7 @@ elif menu == "📥 데이터 입력":
         if uploaded:
             try:
                 df_upload = pd.read_excel(uploaded)
+                df_upload = df_upload.replace([np.nan, np.inf, -np.inf], None)
                 st.dataframe(df_upload.head(10), use_container_width=True)
 
                 missing = [c for c in SALES_COLS if c not in df_upload.columns]
