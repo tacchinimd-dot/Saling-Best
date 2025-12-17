@@ -5,7 +5,14 @@ import numpy as np
 import plotly.express as px
 from datetime import datetime
 import io
+
 from supabase import create_client, Client
+
+# requests는 requirements.txt에 반드시 포함
+try:
+    import requests
+except Exception:
+    requests = None
 
 # =========================
 # 페이지 설정
@@ -31,7 +38,7 @@ MATERIAL_COLS = ["소재명", "소재업체", "혼용원단", "혼용율", "중�
 def init_supabase():
     try:
         url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
+        key = st.secrets["SUPABASE_KEY"]  # Streamlit에는 anon key
         return create_client(url, key)
     except Exception as e:
         st.error(f"❌ Supabase 연결 실패: {e}")
@@ -98,13 +105,10 @@ def load_sales_data():
                     df[c] = None
             df = df[SALES_COLS].copy()
 
-            # 숫자 보정
             for col in ["가격", "당시즌판매수량", "당시즌판매액"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-            # 텍스트 보정
             df = fill_required_text(df, ["품번", "컬러", "제조방식", "소재명", "핏", "기장"])
-
             return df
         return pd.DataFrame(columns=SALES_COLS)
     except Exception as e:
@@ -124,14 +128,17 @@ def load_material_data():
                     df[c] = None
             df = df[MATERIAL_COLS].copy()
 
-            # 숫자 보정 (조직은 텍스트)
             for col in ["혼용율", "중량", "GU", "RA", "SA"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            # 텍스트 보정
             for tcol in ["소재명", "소재업체", "혼용원단", "조직"]:
                 if tcol in df.columns:
-                    df[tcol] = df[tcol].astype(str).replace(["None", "nan"], "").fillna("").apply(lambda x: x.strip())
+                    df[tcol] = (
+                        df[tcol].astype(str)
+                        .replace(["None", "nan"], "")
+                        .fillna("")
+                        .apply(lambda x: x.strip())
+                    )
 
             return df
         return pd.DataFrame(columns=MATERIAL_COLS)
@@ -148,20 +155,15 @@ def save_sales_data(new_df: pd.DataFrame) -> bool:
         return False
     try:
         df = new_df.copy()
-
-        # 컬럼 보정
         for c in SALES_COLS:
             if c not in df.columns:
                 df[c] = None
 
-        # 텍스트(필수) 기본값 보정
         df = fill_required_text(df, ["품번", "컬러", "제조방식", "소재명", "핏", "기장"])
 
-        # 숫자 변환
         for col in ["가격", "당시즌판매수량", "당시즌판매액"]:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        # JSON-safe
         df = make_json_safe_df(df)
 
         records = df[SALES_COLS].to_dict("records")
@@ -182,22 +184,23 @@ def save_material_data(new_df: pd.DataFrame) -> bool:
         return False
     try:
         df = new_df.copy()
-
         for c in MATERIAL_COLS:
             if c not in df.columns:
                 df[c] = None
 
-        # 소재명은 필수로 간주(빈값 방지)
         df = fill_required_text(df, ["소재명"], default="UNKNOWN_MATERIAL")
 
-        # 숫자 변환 (조직은 변환 X)
         for col in ["혼용율", "중량", "GU", "RA", "SA"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # 텍스트 정리
         for tcol in ["소재업체", "혼용원단", "조직"]:
             if tcol in df.columns:
-                df[tcol] = df[tcol].astype(str).replace(["None", "nan"], "").fillna("").apply(lambda x: x.strip())
+                df[tcol] = (
+                    df[tcol].astype(str)
+                    .replace(["None", "nan"], "")
+                    .fillna("")
+                    .apply(lambda x: x.strip())
+                )
 
         df = make_json_safe_df(df)
 
@@ -306,79 +309,14 @@ def enrich_sales_data(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([enriched.reset_index(drop=True), pd.DataFrame(parsed_data)], axis=1)
 
 # =========================
-# 예측 로직 (당시즌 기준)
-# =========================
-def predict_combination(gender, item_name, manufacturing, material, fit, length):
-    if st.session_state.sales_data.empty:
-        return None
-
-    df = enrich_sales_data(st.session_state.sales_data)
-
-    exact = df[
-        (df["성별"] == gender) &
-        (df["아이템명"] == item_name) &
-        (df["제조방식"] == manufacturing) &
-        (df["소재명"] == material) &
-        (df["핏"] == fit) &
-        (df["기장"] == length)
-    ]
-    if not exact.empty:
-        return {
-            "type": "exact",
-            "avg_quantity": exact["당시즌판매수량"].mean(),
-            "avg_price": exact["당시즌판매액"].mean(),
-            "count": len(exact),
-            "confidence": 95
-        }
-
-    similar = df[
-        (df["성별"] == gender) &
-        (df["아이템명"] == item_name) &
-        (df["제조방식"] == manufacturing) &
-        (df["소재명"] == material) &
-        (df["핏"] == fit)
-    ]
-    if not similar.empty:
-        return {"type": "similar_5",
-                "avg_quantity": similar["당시즌판매수량"].mean(),
-                "avg_price": similar["당시즌판매액"].mean(),
-                "count": len(similar),
-                "confidence": 80}
-
-    similar = df[
-        (df["성별"] == gender) &
-        (df["아이템명"] == item_name) &
-        (df["제조방식"] == manufacturing) &
-        (df["소재명"] == material)
-    ]
-    if not similar.empty:
-        return {"type": "similar_4",
-                "avg_quantity": similar["당시즌판매수량"].mean(),
-                "avg_price": similar["당시즌판매액"].mean(),
-                "count": len(similar),
-                "confidence": 65}
-
-    similar = df[
-        (df["성별"] == gender) &
-        (df["아이템명"] == item_name) &
-        (df["제조방식"] == manufacturing)
-    ]
-    if not similar.empty:
-        return {"type": "similar_3",
-                "avg_quantity": similar["당시즌판매수량"].mean(),
-                "avg_price": similar["당시즌판매액"].mean(),
-                "count": len(similar),
-                "confidence": 45}
-
-    return None
-
-# =========================
 # Session State 초기화
 # =========================
 if "sales_data" not in st.session_state:
     st.session_state.sales_data = load_sales_data()
 if "material_data" not in st.session_state:
     st.session_state.material_data = load_material_data()
+if "ai_session_id" not in st.session_state:
+    st.session_state.ai_session_id = None
 
 # =========================
 # Sidebar / Menu
@@ -388,19 +326,22 @@ st.sidebar.markdown("### 판매 분석 시스템")
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🎯 조합 예측", "📥 데이터 입력", "📊 대시보드", "🏆 랭킹", "🧵 소재 분석", "🤖 AI 인사이트/챗봇", "💾 데이터 관리"]
+    ["🎯 조합 예측(AI)", "📥 데이터 입력", "📊 대시보드", "🏆 랭킹", "🧵 소재 분석", "🤖 AI 인사이트/챗봇", "💾 데이터 관리"]
 )
 
 # =========================
-# 1) 조합 예측
+# 1) 조합 예측 (AI 기반)
 # =========================
-if menu == "🎯 조합 예측":
-    st.title("🎯 조합 예측 시뮬레이터 (당시즌 기준)")
+if menu == "🎯 조합 예측(AI)":
+    st.title("🎯 조합 예측 시뮬레이터 (AI 기반)")
 
-    if st.session_state.sales_data.empty:
+    if requests is None:
+        st.error("requests 패키지가 없습니다. requirements.txt에 requests를 추가하세요.")
+    elif st.session_state.sales_data.empty:
         st.warning("⚠️ 데이터가 없습니다. '데이터 입력'에서 먼저 입력해주세요.")
     else:
         col1, col2 = st.columns(2)
+
         with col1:
             st.subheader("📋 조합 입력")
             gender = st.selectbox("성별", ["남성", "여성", "공용"])
@@ -414,83 +355,49 @@ if menu == "🎯 조합 예측":
             fit = st.selectbox("핏", FIT_OPTIONS)
             length = st.selectbox("기장", LENGTH_OPTIONS)
 
-            predict_btn = st.button("🔮 예측 결과 보기", type="primary", use_container_width=True)
+            # ✅ predict_btn은 반드시 여기서 생성(스코프/NameError 방지)
+            predict_btn = st.button("🔮 AI 예측 결과 보기", type="primary", use_container_width=True)
 
         with col2:
             st.subheader("📊 예측 결과")
             if predict_btn:
-if predict_btn:
-    import requests
+                fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
+                if not fn_predict:
+                    st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
+                else:
+                    payload = {
+                        "gender": gender,
+                        "item_name": item_name,
+                        "manufacturing": manufacturing,
+                        "material": material,
+                        "fit": fit,
+                        "length": length,
+                    }
 
-    fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
-    if not fn_predict:
-        st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
-    else:
-        payload = {
-            "gender": gender,
-            "item_name": item_name,
-            "manufacturing": manufacturing,
-            "material": material,
-            "fit": fit,
-            "length": length,
-        }
+                    try:
+                        r = requests.post(fn_predict, json=payload, timeout=120)
+                        out = r.json()
+                    except Exception as e:
+                        st.error(f"AI 예측 호출 실패: {e}")
+                        out = None
 
-        try:
-            r = requests.post(fn_predict, json=payload, timeout=120)
-            out = r.json()
-        except Exception as e:
-            st.error(f"AI 예측 호출 실패: {e}")
-            out = None
+                    if not out or not out.get("ok"):
+                        st.error(out.get("error", "AI 예측 실패(응답 형식 오류)"))
+                    else:
+                        res = out.get("result", {})
+                        st.success("✅ AI 예측 완료")
 
-        if not out or not out.get("ok"):
-            st.error(out.get("error", "AI 예측 실패(응답 형식 오류)"))
-        else:
-            res = out["result"]
-            st.success("✅ AI 예측 완료")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("예상 당시즌판매수량", f"{float(res.get('pred_qty', 0)):.0f}개")
+                        c2.metric("예상 당시즌판매액", f"{float(res.get('pred_amt', 0)):,.0f}원")
+                        c3.metric("신뢰도", f"{float(res.get('confidence', 0)):.0f}%")
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("예상 당시즌판매수량", f"{float(res.get('pred_qty', 0)):.0f}개")
-            c2.metric("예상 당시즌판매액", f"{float(res.get('pred_amt', 0)):,.0f}원")
-            c3.metric("신뢰도", f"{float(res.get('confidence', 0)):.0f}%")
+                        st.markdown("#### 근거")
+                        st.write(res.get("rationale", ""))
 
-            st.markdown("#### 근거")
-            st.write(res.get("rationale", ""))
-
-            warnings = res.get("warnings", [])
-            if warnings:
-                st.warning(" / ".join(warnings))
-
-
-if predict_btn:
-    import requests
-    fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
-    if not fn_predict:
-        st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
-    else:
-        payload = {
-            "gender": gender,
-            "item_name": item_name,
-            "manufacturing": manufacturing,
-            "material": material,
-            "fit": fit,
-            "length": length,
-        }
-        r = requests.post(fn_predict, json=payload, timeout=120)
-        out = r.json()
-        if not out.get("ok"):
-            st.error(out.get("error", "AI 예측 호출 실패"))
-        else:
-            res = out["result"]
-            st.success("✅ AI 예측 완료")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("예상 당시즌판매수량", f"{res['pred_qty']:.0f}개")
-            c2.metric("예상 당시즌판매액", f"{res['pred_amt']:,.0f}원")
-            c3.metric("신뢰도", f"{res['confidence']:.0f}%")
-            st.markdown("#### 근거")
-            st.write(res.get("rationale", ""))
-            if res.get("warnings"):
-                st.warning(" / ".join(res["warnings"]))
-
+                        warnings = res.get("warnings", [])
+                        if warnings:
+                            st.warning(" / ".join(warnings))
 
 # =========================
 # 2) 데이터 입력
@@ -507,15 +414,6 @@ elif menu == "📥 데이터 입력":
         col1, col2 = st.columns(2)
         with col1:
             input_code = st.text_input("품번", placeholder="TXHD6054")
-            if input_code:
-                parsed = parse_item_code(input_code)
-                if parsed:
-                    gender_text = GENDER_MAPPING.get(parsed["gender"], "알수없음")
-                    item_text = ITEM_MAPPING.get(parsed["item_code"], "알수없음")
-                    st.success(f"✅ {gender_text} / {item_text}")
-                else:
-                    st.warning("⚠️ 품번 형식을 확인해주세요 (최소 8자리)")
-
             input_color = st.text_input("컬러", placeholder="BKS")
             input_price_unit = st.number_input("가격", min_value=0, step=1000, value=149000)
             input_manufacturing = st.text_input("제조방식", value="KNIT")
@@ -662,36 +560,6 @@ elif menu == "📊 대시보드":
             fig2.update_layout(showlegend=False, xaxis_title="당시즌판매수량", yaxis_title="")
             st.plotly_chart(fig2, use_container_width=True)
 
-        col3, col4 = st.columns(2)
-        with col3:
-            st.subheader("📁 카테고리별 당시즌판매수량")
-            category_sales = df.groupby("카테고리")["당시즌판매수량"].sum().sort_values(ascending=False)
-            fig3 = px.bar(x=category_sales.values, y=category_sales.index, orientation="h")
-            fig3.update_layout(showlegend=False, xaxis_title="당시즌판매수량", yaxis_title="")
-            st.plotly_chart(fig3, use_container_width=True)
-
-        with col4:
-            st.subheader("👕 아이템별 TOP 10 (당시즌판매수량)")
-            item_sales = df.groupby("아이템명")["당시즌판매수량"].sum().sort_values(ascending=False).head(10)
-            fig4 = px.bar(x=item_sales.values, y=item_sales.index, orientation="h")
-            fig4.update_layout(showlegend=False, xaxis_title="당시즌판매수량", yaxis_title="")
-            st.plotly_chart(fig4, use_container_width=True)
-
-        st.divider()
-        col5, col6 = st.columns(2)
-        with col5:
-            st.subheader("🌈 컬러별 TOP 10 (당시즌판매수량)")
-            color_sales = df.groupby("컬러")["당시즌판매수량"].sum().sort_values(ascending=False).head(10)
-            fig5 = px.bar(x=color_sales.values, y=color_sales.index, orientation="h")
-            fig5.update_layout(showlegend=False, xaxis_title="당시즌판매수량", yaxis_title="")
-            st.plotly_chart(fig5, use_container_width=True)
-
-        with col6:
-            st.subheader("🌸 시즌별 당시즌판매수량")
-            season_sales = df.groupby("시즌")["당시즌판매수량"].sum()
-            fig6 = px.pie(values=season_sales.values, names=season_sales.index, hole=0.4)
-            st.plotly_chart(fig6, use_container_width=True)
-
 # =========================
 # 4) 랭킹
 # =========================
@@ -733,7 +601,7 @@ elif menu == "🏆 랭킹":
             st.dataframe(bottom_combos, use_container_width=True, hide_index=True)
 
 # =========================
-# 5) 소재 분석 + 조직×GU/RA/SA×판매 매트릭스
+# 5) 소재 분석 + 조직 매트릭스
 # =========================
 elif menu == "🧵 소재 분석":
     st.title("🧵 소재별 성과 분석 (당시즌 기준)")
@@ -775,11 +643,10 @@ elif menu == "🧵 소재 분석":
             merged = sales_df.merge(mat_small, on="소재명", how="left")
 
             miss_org = merged["조직"].isna().mean() if len(merged) else 1.0
-            st.caption(f"조직 미매칭 비율: **{miss_org*100:.1f}%** (소재명 불일치/미등록 가능)")
+            st.caption(f"조직 미매칭 비율: **{miss_org*100:.1f}%**")
 
             matrix = (
-                merged
-                .dropna(subset=["조직"])
+                merged.dropna(subset=["조직"])
                 .groupby("조직")
                 .agg(
                     평균_GU=("GU", "mean"),
@@ -819,78 +686,15 @@ elif menu == "🧵 소재 분석":
                 fig.update_layout(xaxis_title="SA (매끈함 ↑)", yaxis_title="GU (광택 ↑)")
                 st.plotly_chart(fig, use_container_width=True)
 
-        st.divider()
-        st.subheader("📈 GU/RA/SA ↔ 판매 상관/구간 분석 (소재 마스터 조인)")
-
-        if st.session_state.material_data.empty:
-            st.warning("소재 마스터(material_data)가 비어 있어 GU/RA/SA 분석을 진행할 수 없습니다.")
-        else:
-            sales_df = st.session_state.sales_data.copy()
-            mat_df = st.session_state.material_data.copy()
-
-            sales_df["당시즌판매수량"] = pd.to_numeric(sales_df["당시즌판매수량"], errors="coerce").fillna(0)
-            sales_df["당시즌판매액"] = pd.to_numeric(sales_df["당시즌판매액"], errors="coerce").fillna(0)
-
-            for c in ["GU", "RA", "SA"]:
-                mat_df[c] = pd.to_numeric(mat_df[c], errors="coerce")
-
-            mat_small = mat_df[["소재명", "GU", "RA", "SA"]].drop_duplicates(subset=["소재명"])
-            merged = sales_df.merge(mat_small, on="소재명", how="left")
-
-            missing_prop = merged["GU"].isna().mean() if len(merged) else 1.0
-            st.caption(f"소재 마스터(GU/RA/SA) 미매칭 비율: **{missing_prop*100:.1f}%**")
-
-            scope = st.radio("분석 범위", ["전체 소재"], horizontal=True)
-
-            merged_scope = merged.copy()
-            if merged_scope.empty:
-                st.warning("분석할 데이터가 없습니다.")
-            else:
-                st.markdown("### 1) 상관분석 (Pearson)")
-                target_metric = st.selectbox("판매 지표", ["당시즌판매수량", "당시즌판매액"], index=0)
-
-                corr_rows = []
-                for c in ["GU", "RA", "SA"]:
-                    corr = _safe_corr(merged_scope[c], merged_scope[target_metric])
-                    n = int(pd.concat([merged_scope[c], merged_scope[target_metric]], axis=1).dropna().shape[0])
-                    corr_rows.append({"지표": c, "corr": corr, "샘플수": n})
-
-                st.dataframe(pd.DataFrame(corr_rows), use_container_width=True, hide_index=True)
-
-                st.markdown("### 2) 구간(빈) 비교 분석")
-                bin_metric = st.selectbox("구간화할 물성 지표", ["GU", "RA", "SA"], index=0)
-                bin_method = st.radio("구간화 방식", ["equal_width", "quantile"], horizontal=True)
-                bin_count = st.slider("구간 수", 2, 6, 4)
-
-                tmp = merged_scope.dropna(subset=[bin_metric]).copy()
-                if tmp.empty:
-                    st.warning("구간 분석할 데이터가 없습니다. (해당 지표가 비어있음)")
-                else:
-                    bins = _bin_series(tmp[bin_metric], method=bin_method, bins=bin_count)
-                    if bins is None:
-                        st.warning("구간 생성 실패 (데이터 부족)")
-                    else:
-                        tmp["구간"] = bins.astype(str)
-                        agg = tmp.groupby("구간").agg(
-                            표본수=("품번", "count"),
-                            판매수량_합=("당시즌판매수량", "sum"),
-                            판매수량_평균=("당시즌판매수량", "mean"),
-                            판매액_합=("당시즌판매액", "sum"),
-                            판매액_평균=("당시즌판매액", "mean"),
-                        ).reset_index()
-
-                        for c in ["판매수량_평균", "판매액_평균"]:
-                            agg[c] = agg[c].round(2)
-
-                        st.dataframe(agg, use_container_width=True, hide_index=True)
-
 # =========================
 # 6) AI 인사이트/챗봇 (Edge Function 호출)
 # =========================
 elif menu == "🤖 AI 인사이트/챗봇":
     st.title("🤖 AI 인사이트 & Q&A 챗봇")
 
-    if supabase is None:
+    if requests is None:
+        st.error("requests 패키지가 없습니다. requirements.txt에 requests를 추가하세요.")
+    elif supabase is None:
         st.error("Supabase 연결이 없습니다.")
     else:
         fn_url = st.secrets.get("SUPABASE_FUNCTION_INSIGHTS_URL", "")
@@ -906,7 +710,6 @@ elif menu == "🤖 AI 인사이트/챗봇":
                 scope = st.text_input("스코프(scope)", value="global", help="예: global / org:INTERLOCK")
                 if st.button("🚀 인사이트 생성", type="primary", use_container_width=True):
                     try:
-                        import requests
                         r = requests.post(fn_url, json={"mode": "insight", "scope": scope}, timeout=120)
                         out = r.json()
                         if out.get("ok"):
@@ -919,19 +722,15 @@ elif menu == "🤖 AI 인사이트/챗봇":
 
             with col2:
                 st.subheader("💬 추가 질의응답(챗봇)")
-                if "ai_session_id" not in st.session_state:
-                    st.session_state.ai_session_id = None
-
                 q = st.text_area("질문", placeholder="예: INTERLOCK 조직은 SA가 높은데 판매가 왜 낮아? 다음 시즌 테스트는?")
                 if st.button("질문하기", use_container_width=True):
                     if not q.strip():
                         st.warning("질문을 입력해주세요.")
                     else:
                         try:
-                            import requests
                             payload = {
                                 "mode": "chat",
-                                "scope": scope if "scope" in locals() else "global",
+                                "scope": scope,
                                 "session_id": st.session_state.ai_session_id,
                                 "question": q.strip()
                             }
@@ -955,7 +754,6 @@ elif menu == "💾 데이터 관리":
 
     with tab1:
         st.subheader("📥 데이터 다운로드")
-
         col1, col2 = st.columns(2)
 
         with col1:
@@ -969,13 +767,6 @@ elif menu == "💾 데이터 관리":
                     buffer1.getvalue(),
                     f"판매데이터_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                csv1 = st.session_state.sales_data[SALES_COLS].to_csv(index=False, encoding="utf-8-sig")
-                st.download_button(
-                    "📥 판매 데이터 CSV 다운로드",
-                    csv1,
-                    f"판매데이터_{datetime.now().strftime('%Y%m%d')}.csv",
-                    "text/csv"
                 )
             else:
                 st.info("다운로드할 판매 데이터가 없습니다.")
@@ -994,30 +785,6 @@ elif menu == "💾 데이터 관리":
                 )
             else:
                 st.info("다운로드할 소재 데이터가 없습니다.")
-
-    with tab2:
-        st.subheader("📊 데이터 확인 및 편집 (로컬)")
-        st.caption("⚠️ data_editor에서 수정한 값은 DB 업데이트로 반영되지 않습니다(현재 버전은 insert/delete 중심).")
-        data_type = st.radio("데이터 유형", ["판매 데이터", "소재 데이터"], horizontal=True)
-
-        if data_type == "판매 데이터":
-            if not st.session_state.sales_data.empty:
-                edited_sales = st.data_editor(st.session_state.sales_data[SALES_COLS], use_container_width=True, num_rows="dynamic")
-                if st.button("💾 (로컬) 판매 변경사항 반영"):
-                    st.session_state.sales_data = edited_sales
-                    st.success("✅ 로컬 변경사항 반영 완료 (DB 업데이트는 아님)")
-                    st.rerun()
-            else:
-                st.warning("편집할 판매 데이터가 없습니다.")
-        else:
-            if not st.session_state.material_data.empty:
-                edited_mat = st.data_editor(st.session_state.material_data[MATERIAL_COLS], use_container_width=True, num_rows="dynamic")
-                if st.button("💾 (로컬) 소재 변경사항 반영"):
-                    st.session_state.material_data = edited_mat
-                    st.success("✅ 로컬 변경사항 반영 완료 (DB 업데이트는 아님)")
-                    st.rerun()
-            else:
-                st.warning("편집할 소재 데이터가 없습니다.")
 
     with tab3:
         st.subheader("🗑️ 데이터 삭제")
@@ -1045,12 +812,7 @@ st.sidebar.info(f"""
 - 판매 데이터: {len(st.session_state.sales_data)}건
 - 소재 데이터: {len(st.session_state.material_data)}건
 
-💡 **데이터 저장**
-- Supabase 클라우드에 영구 저장
-- 브라우저 종료해도 데이터 유지
-
-🔄 **새로고침**
+🔄 **캐시**
 - 캐시 시간: 10분
 """)
-st.sidebar.markdown("---")
 st.sidebar.caption("© 2025 세르지오타키니 판매분석시스템 (Streamlit+Supabase)")
