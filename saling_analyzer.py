@@ -437,6 +437,37 @@ if menu == "🎯 조합 예측":
                 else:
                     st.error("❌ 참고 데이터가 없습니다.")
 
+if predict_btn:
+    import requests
+    fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
+    if not fn_predict:
+        st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
+    else:
+        payload = {
+            "gender": gender,
+            "item_name": item_name,
+            "manufacturing": manufacturing,
+            "material": material,
+            "fit": fit,
+            "length": length,
+        }
+        r = requests.post(fn_predict, json=payload, timeout=120)
+        out = r.json()
+        if not out.get("ok"):
+            st.error(out.get("error", "AI 예측 호출 실패"))
+        else:
+            res = out["result"]
+            st.success("✅ AI 예측 완료")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("예상 당시즌판매수량", f"{res['pred_qty']:.0f}개")
+            c2.metric("예상 당시즌판매액", f"{res['pred_amt']:,.0f}원")
+            c3.metric("신뢰도", f"{res['confidence']:.0f}%")
+            st.markdown("#### 근거")
+            st.write(res.get("rationale", ""))
+            if res.get("warnings"):
+                st.warning(" / ".join(res["warnings"]))
+
+
 # =========================
 # 2) 데이터 입력
 # =========================
