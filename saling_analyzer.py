@@ -126,7 +126,7 @@ def safe_json(resp):
 
 def show_api_error(out, fallback="요청 실패(응답 형식 오류)"):
     if isinstance(out, dict):
-        return out.get("error", fallback)
+        return out.get("error", out.get("message", fallback))
     return fallback
 
 # =========================
@@ -525,7 +525,7 @@ menu = st.sidebar.radio(
 )
 
 # =========================================================
-# 🏠 홈(챗): DB 기반 Q&A + 예측(assistant Edge Function)
+# 🏠 홈(챗): DB 기반 Q&A + 예측 (assistant Edge Function)
 # =========================================================
 if menu == "🏠 홈(챗)":
     st.markdown("## 🏠 홈 · MD Q&A 챗봇")
@@ -547,7 +547,6 @@ if menu == "🏠 홈(챗)":
         if not fn_assist:
             st.error("st.secrets에 SUPABASE_FUNCTION_ASSIST_URL을 설정해주세요.")
         else:
-            # 모드 토글
             cA, cB = st.columns([1, 2])
             with cA:
                 rationale_mode_ui = st.radio(
@@ -574,19 +573,23 @@ if menu == "🏠 홈(챗)":
 
             st.write("")
 
-            # 기존 대화 출력
+            # 대화 출력
             for m in st.session_state.home_chat[-40:]:
                 with st.chat_message(m["role"]):
                     st.markdown(m["content"])
 
             user_msg = st.chat_input("품번/소재/예측 관련 질문을 입력하세요…")
+
             if user_msg:
+                # 사용자 입력 저장/표시
                 st.session_state.home_chat.append({"role": "user", "content": user_msg})
                 with st.chat_message("user"):
                     st.markdown(user_msg)
 
+                # 최근 히스토리만 전달
                 history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.home_chat[-12:]]
 
+                # assistant 호출/표시
                 with st.chat_message("assistant"):
                     with st.spinner("DB 조회 + 예측 + 답변 생성 중…"):
                         try:
@@ -595,36 +598,44 @@ if menu == "🏠 홈(챗)":
                                 "history": history,
                                 "rationale_mode": rationale_mode,
                             }
+
                             r = requests.post(fn_assist, json=payload, timeout=120)
-                            out = r.json()
-                           if not isinstance(out, dict):
-    ans = f"⚠️ 오류: 응답이 JSON(dict)이 아닙니다: {out}"
-    st.error(ans)
-else:
-    if not out.get("ok"):
-        ans = f"⚠️ 오류: {out.get('error', out.get('message', 'Unknown error'))}"
-        st.error(ans)
-        with st.expander("🧾 (에러 원문) assistant 응답 보기", expanded=True):
-            st.json(out)
-    else:
-        ans = out.get("answer", "")
-        st.markdown(ans)
 
+                            # 응답 파싱(안전)
+                            out = safe_json(r)
+                            if out is None:
+                                ans = f"⚠️ 오류: assistant 응답이 JSON이 아닙니다. status={getattr(r,'status_code',None)}"
+                                st.error(ans)
+                                st.session_state.home_chat.append({"role": "assistant", "content": ans})
                             else:
-                                ans = out.get("answer", "")
-                                st.markdown(ans)
+                                # ===== assistant 응답 처리 (IndentationError 방지용 완성 블록) =====
+                                if not isinstance(out, dict):
+                                    ans = f"⚠️ 오류: assistant 응답이 JSON(dict)이 아닙니다.\n{out}"
+                                    st.error(ans)
+                                    st.session_state.home_chat.append({"role": "assistant", "content": ans})
+                                else:
+                                    if not out.get("ok"):
+                                        ans = f"⚠️ 오류: {out.get('error', out.get('message', 'Unknown error'))}"
+                                        st.error(ans)
+                                        with st.expander("🧾 (에러 원문) assistant 응답", expanded=True):
+                                            st.json(out)
+                                        st.session_state.home_chat.append({"role": "assistant", "content": ans})
+                                    else:
+                                        ans = out.get("answer", "")
+                                        st.markdown(ans)
 
-                                # 디버그는 접어서 제공
-                                with st.expander("🛠️ (디버그) assistant 컨텍스트", expanded=False):
-                                    st.json(out.get("context", {}))
+                                        # (선택) context 확인용
+                                        with st.expander("🛠️ (디버그) assistant 컨텍스트", expanded=False):
+                                            st.json(out.get("context", {}))
 
-                            st.session_state.home_chat.append({"role": "assistant", "content": ans})
+                                        st.session_state.home_chat.append({"role": "assistant", "content": ans})
+                                # ===== assistant 응답 처리 끝 =====
+
                         except Exception as e:
                             ans = f"⚠️ 호출 실패: {e}"
                             st.error(ans)
                             st.session_state.home_chat.append({"role": "assistant", "content": ans})
 
-            # 편의 기능
             st.write("")
             colX, colY = st.columns(2)
             with colX:
@@ -635,7 +646,7 @@ else:
                 st.caption("※ 기록이 길어지면 화면이 무거워질 수 있어 최근 40턴만 표시합니다.")
 
 # =========================================================
-# 🎯 조합 예측(AI): 직접 입력 예측 화면
+# 🎯 조합 예측(AI)
 # =========================================================
 elif menu == "🎯 조합 예측(AI)":
     st.markdown("## 🎯 AI 조합 예측 시뮬레이터")
@@ -646,39 +657,43 @@ elif menu == "🎯 조합 예측(AI)":
     elif st.session_state.sales_data.empty:
         st.warning("⚠️ 데이터가 없습니다. '데이터 입력'에서 먼저 입력해주세요.")
     else:
-        df_enriched = enrich_sales_data(st.session_state.sales_data)
-        materials = sorted(df_enriched["소재명"].dropna().unique().tolist())
+        fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
+        if not fn_predict:
+            st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
+        else:
+            df_enriched = enrich_sales_data(st.session_state.sales_data)
+            materials = sorted(df_enriched["소재명"].dropna().unique().tolist())
 
-        left, right = st.columns([1.05, 1.0], gap="large")
+            left, right = st.columns([1.05, 1.0], gap="large")
 
-        with left:
-            st.markdown('<div class="card"><div class="card-title">🧩 예측 입력</div><div class="card-sub">조합을 선택하면 소재마스터가 자동 매핑됩니다.</div></div>', unsafe_allow_html=True)
-            st.write("")
+            with left:
+                st.markdown('<div class="card"><div class="card-title">🧩 예측 입력</div><div class="card-sub">조합을 선택하면 소재마스터가 자동 매핑됩니다.</div></div>', unsafe_allow_html=True)
+                st.write("")
 
-            c1, c2 = st.columns(2)
-            with c1:
-                gender = st.selectbox("👤 성별", ["남성", "여성", "공용"])
-                item_name = st.selectbox("🧷 아이템", sorted(set(ITEM_MAPPING.values())))
-                manufacturing = st.selectbox("🏭 제조방식", MANUFACTURING_OPTIONS)
-            with c2:
-                material = st.selectbox("🧵 소재", materials) if materials else st.text_input("소재명 입력")
-                fit = st.selectbox("📐 핏", FIT_OPTIONS)
-                length = st.selectbox("📏 기장", LENGTH_OPTIONS)
+                c1, c2 = st.columns(2)
+                with c1:
+                    gender = st.selectbox("👤 성별", ["남성", "여성", "공용"])
+                    item_name = st.selectbox("🧷 아이템", sorted(set(ITEM_MAPPING.values())))
+                    manufacturing = st.selectbox("🏭 제조방식", MANUFACTURING_OPTIONS)
+                with c2:
+                    material = st.selectbox("🧵 소재", materials) if materials else st.text_input("소재명 입력")
+                    fit = st.selectbox("📐 핏", FIT_OPTIONS)
+                    length = st.selectbox("📏 기장", LENGTH_OPTIONS)
 
-            default_price = int(df_enriched["가격"].median()) if "가격" in df_enriched.columns and len(df_enriched) else 0
-            price = st.number_input("💰 가격(예측 입력)", min_value=0, step=1000, value=default_price)
+                default_price = int(df_enriched["가격"].median()) if "가격" in df_enriched.columns and len(df_enriched) else 0
+                price = st.number_input("💰 가격(예측 입력)", min_value=0, step=1000, value=default_price)
 
-            rationale_mode_ui = st.radio(
-                "🗣️ 근거 설명 모드",
-                ["🧑‍💼 MD 모드(상세)", "👔 임원 모드(요약)"],
-                horizontal=True
-            )
-            rationale_mode = "md" if "MD 모드" in rationale_mode_ui else "exec"
+                rationale_mode_ui = st.radio(
+                    "🗣️ 근거 설명 모드",
+                    ["🧑‍💼 MD 모드(상세)", "👔 임원 모드(요약)"],
+                    horizontal=True
+                )
+                rationale_mode = "md" if "MD 모드" in rationale_mode_ui else "exec"
 
-            mat_row = get_material_row(material, st.session_state.material_data)
-            if mat_row:
-                st.markdown(
-                    f"""
+                mat_row = get_material_row(material, st.session_state.material_data)
+                if mat_row:
+                    st.markdown(
+                        f"""
 <div class="card">
   <div class="card-title">🧵 소재 마스터 매핑</div>
   <div class="muted">소재명: <b>{material}</b> / 업체: <b>{mat_row.get("소재업체") or "N/A"}</b></div>
@@ -692,31 +707,27 @@ elif menu == "🎯 조합 예측(AI)":
   <div class="muted">혼용: <b>{mat_row.get("혼용원단") or "N/A"}</b><br/>혼용율: <b>{mat_row.get("혼용율") or "N/A"}</b></div>
 </div>
 """,
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    """
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        """
 <div class="card">
   <div class="card-title">🧵 소재 마스터 매핑</div>
   <div class="muted">소재 마스터에서 해당 소재를 찾지 못했습니다.<br/>예측은 가능하지만 <b>CT/SF/FB-LV</b>가 비어 정확도가 낮아질 수 있어요.</div>
 </div>
 """,
-                    unsafe_allow_html=True,
-                )
+                        unsafe_allow_html=True,
+                    )
 
-            st.write("")
-            predict_btn = st.button("🔮 AI 예측 실행", type="primary", use_container_width=True)
+                st.write("")
+                predict_btn = st.button("🔮 AI 예측 실행", type="primary", use_container_width=True)
 
-        with right:
-            st.markdown('<div class="card"><div class="card-title">📈 예측 결과</div><div class="card-sub">수량·금액·신뢰도와 근거를 한 화면에서 확인합니다.</div></div>', unsafe_allow_html=True)
-            st.write("")
+            with right:
+                st.markdown('<div class="card"><div class="card-title">📈 예측 결과</div><div class="card-sub">수량·금액·신뢰도와 근거를 한 화면에서 확인합니다.</div></div>', unsafe_allow_html=True)
+                st.write("")
 
-            if predict_btn:
-                fn_predict = st.secrets.get("SUPABASE_FUNCTION_PREDICT_URL", "")
-                if not fn_predict:
-                    st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
-                else:
+                if predict_btn:
                     blend_feats = derive_blend_features(mat_row.get("혼용원단"), mat_row.get("혼용율")) if mat_row else \
                         {"pct_cotton": None, "pct_synthetic": None, "pct_regenerated": None, "pct_spandex": None, "n_fibers": None}
 
@@ -757,16 +768,14 @@ elif menu == "🎯 조합 예측(AI)":
                     payload = _deep_clean(payload)
 
                     with st.spinner("AI가 유사 데이터를 찾고 예측을 계산 중입니다..."):
-                        out = None
-                        try:
-                            r = requests.post(fn_predict, json=payload, timeout=120)
-                            out = safe_json(r)
-                        except Exception as e:
-                            st.error(f"AI 예측 호출 실패: {e}")
-                            out = None
+                        r = requests.post(fn_predict, json=payload, timeout=120)
+                        out = safe_json(r)
 
-                    if not isinstance(out, dict) or not out.get("ok"):
+                    if out is None or not isinstance(out, dict) or not out.get("ok"):
                         st.error(show_api_error(out, "AI 예측 실패"))
+                        if isinstance(out, dict):
+                            with st.expander("🧾 (에러 원문) predict 응답", expanded=True):
+                                st.json(out)
                     else:
                         res = out.get("result", {}) or {}
                         pred_qty = float(res.get("pred_qty", 0))
@@ -843,7 +852,6 @@ elif menu == "📥 데이터 입력":
 
     with tab1:
         st.markdown("### 📝 판매 데이터 수동 입력")
-        st.caption("템플릿: 품번/컬러/가격/제조방식/소재명/핏/기장/당시즌판매수량/당시즌판매액")
         col1, col2 = st.columns(2)
         with col1:
             input_code = st.text_input("품번", placeholder="TWPQ10953")
@@ -855,7 +863,6 @@ elif menu == "📥 데이터 입력":
             input_fit = st.text_input("핏", value="REGULAR")
             input_length = st.text_input("기장", value="REGULAR")
             input_qty = st.number_input("당시즌판매수량", min_value=0, step=1, value=15)
-
             auto_calc_amt = st.checkbox("당시즌판매액 자동 계산(가격×수량)", value=True)
             if auto_calc_amt:
                 input_amt = int(input_price_unit * input_qty)
@@ -910,9 +917,7 @@ elif menu == "📥 데이터 입력":
                 if missing:
                     st.error(f"❌ 업로드 파일 컬럼 누락: {missing}")
                 else:
-                    st.success("업로드 파일을 확인했습니다.")
                     st.dataframe(df_upload.head(30), use_container_width=True)
-
                     colA, colB = st.columns(2)
                     with colA:
                         if st.button("✅ 적용 (추가 Insert)", use_container_width=True):
@@ -958,9 +963,7 @@ elif menu == "📥 데이터 입력":
                 if missing:
                     st.error(f"❌ 업로드 파일 컬럼 누락: {missing}")
                 else:
-                    st.success("업로드 파일을 확인했습니다.")
                     st.dataframe(df_mat.head(40), use_container_width=True)
-
                     colA, colB = st.columns(2)
                     with colA:
                         if st.button("✅ 적용 (추가 Insert)", use_container_width=True):
@@ -978,7 +981,7 @@ elif menu == "📥 데이터 입력":
                 st.error(f"❌ 오류: {e}")
 
 # =========================================================
-# 📊 대시보드
+# 나머지 메뉴(간단 유지)
 # =========================================================
 elif menu == "📊 대시보드":
     st.markdown("## 📊 판매 분석 대시보드 (당시즌 기준)")
@@ -1010,16 +1013,13 @@ elif menu == "📊 대시보드":
             fig2.update_layout(showlegend=False, xaxis_title="판매수량", yaxis_title="")
             st.plotly_chart(fig2, use_container_width=True)
 
-# =========================================================
-# 🏆 랭킹
-# =========================================================
 elif menu == "🏆 랭킹":
     st.markdown("## 🏆 조합별 성과 랭킹 (당시즌 기준)")
     if st.session_state.sales_data.empty:
         st.warning("⚠️ 분석할 데이터가 없습니다.")
     else:
         df = enrich_sales_data(st.session_state.sales_data.copy())
-        df["조합"] = df["성별"] + " / " + df["아이템명"] + " / " + df["제조방식"] + " / " + df["소재명"] + " / " + df["핏"] + " / " + df["기장"]
+        df["조합"] = df["성별"] + " / " + df["아이템명"] + " / " + df["제조방식"] + " / " + df["소재명"] + " / " + df["핏"] + " / " + df["기장"
 
         combo_stats = df.groupby("조합").agg({
             "당시즌판매수량": ["sum", "mean", "count"],
@@ -1047,16 +1047,12 @@ elif menu == "🏆 랭킹":
             st.plotly_chart(fig_bottom, use_container_width=True)
             st.dataframe(bottom_combos, use_container_width=True, hide_index=True)
 
-# =========================================================
-# 🧵 소재 분석
-# =========================================================
 elif menu == "🧵 소재 분석":
     st.markdown("## 🧵 소재별 성과 분석 (당시즌 기준)")
     if st.session_state.sales_data.empty:
         st.warning("⚠️ 분석할 데이터가 없습니다.")
     else:
         df = enrich_sales_data(st.session_state.sales_data.copy())
-
         material_stats = df.groupby("소재명").agg({
             "당시즌판매수량": ["sum", "mean", "count"],
             "당시즌판매액": ["sum", "mean"],
@@ -1064,141 +1060,36 @@ elif menu == "🧵 소재 분석":
         }).round(0)
         material_stats.columns = ["총판매수량", "평균판매수량", "데이터수", "총판매액", "평균판매액", "SKU수"]
         material_stats = material_stats.reset_index().sort_values("총판매수량", ascending=False)
-
-        st.markdown("### 📌 소재별 성과 요약")
         st.dataframe(material_stats, use_container_width=True, hide_index=True)
 
-        st.divider()
-        st.markdown("### 🧬 조직 × CT/SF/FB-LV × 판매 성과")
-
-        if st.session_state.material_data.empty:
-            st.warning("소재 마스터(material_data)가 비어 있어 조직 매트릭스를 생성할 수 없습니다.")
-        else:
-            sales_df = st.session_state.sales_data.copy()
-            mat_df = st.session_state.material_data.copy()
-
-            sales_df["당시즌판매수량"] = pd.to_numeric(sales_df["당시즌판매수량"], errors="coerce").fillna(0)
-            sales_df["당시즌판매액"] = pd.to_numeric(sales_df["당시즌판매액"], errors="coerce").fillna(0)
-
-            for c in ["CT %", "SF %", "FB-LV"]:
-                mat_df[c] = pd.to_numeric(mat_df[c], errors="coerce")
-
-            mat_small = mat_df[["소재명", "조직", "CT %", "SF %", "FB-LV"]].drop_duplicates(subset=["소재명"])
-            merged = sales_df.merge(mat_small, on="소재명", how="left")
-
-            miss_org = merged["조직"].isna().mean() if len(merged) else 1.0
-            st.caption(f"조직 미매칭 비율: **{miss_org*100:.1f}%**")
-
-            matrix = (
-                merged.dropna(subset=["조직"])
-                .groupby("조직")
-                .agg(
-                    평균_CT=("CT %", "mean"),
-                    평균_SF=("SF %", "mean"),
-                    평균_FB_LV=("FB-LV", "mean"),
-                    총판매수량=("당시즌판매수량", "sum"),
-                    평균판매수량=("당시즌판매수량", "mean"),
-                    총판매액=("당시즌판매액", "sum"),
-                    SKU수=("품번", "nunique"),
-                    데이터수=("품번", "count"),
-                )
-                .reset_index()
-            )
-
-            for c in ["평균_CT", "평균_SF", "평균_FB_LV", "평균판매수량"]:
-                matrix[c] = matrix[c].round(2)
-            matrix["총판매액"] = matrix["총판매액"].fillna(0).astype(int)
-
-            st.dataframe(matrix.sort_values("총판매수량", ascending=False), use_container_width=True, hide_index=True)
-
-            st.markdown("### 🎯 조직 포지셔닝 (CT% × SF%, 버블=총판매수량, 컬러=FB-LV)")
-            if not matrix.empty:
-                fig = px.scatter(
-                    matrix,
-                    x="평균_CT",
-                    y="평균_SF",
-                    size="총판매수량",
-                    color="평균_FB_LV",
-                    hover_name="조직",
-                    size_max=60,
-                    labels={"평균_CT": "CT %", "평균_SF": "SF %", "평균_FB_LV": "FB-LV"}
-                )
-                fig.update_layout(xaxis_title="CT % (↑)", yaxis_title="SF % (↑)")
-                st.plotly_chart(fig, use_container_width=True)
-
-# =========================================================
-# 🤖 AI 인사이트/챗봇 (선택 유지)
-# =========================================================
 elif menu == "🤖 AI 인사이트/챗봇":
     st.markdown("## 🤖 AI 인사이트 & Q&A (옵션)")
     if requests is None:
         st.error("requests 패키지가 없습니다. requirements.txt에 requests를 추가하세요.")
-    elif supabase is None:
-        st.error("Supabase 연결이 없습니다.")
     else:
         fn_url = st.secrets.get("SUPABASE_FUNCTION_INSIGHTS_URL", "")
         if not fn_url:
             st.info("SUPABASE_FUNCTION_INSIGHTS_URL이 없으면 이 메뉴는 사용하지 않습니다. (홈 챗봇 사용 권장)")
         else:
-            st.markdown('<div class="callout">🔐 OpenAI Key는 Streamlit이 아니라 <b>Supabase Edge Function</b>에만 설정하세요.</div>', unsafe_allow_html=True)
-            col1, col2 = st.columns([1, 1], gap="large")
+            st.caption("※ OpenAI Key는 Streamlit이 아니라 Supabase Edge Function에만 설정하세요.")
+            scope = st.text_input("스코프(scope)", value="global")
+            q = st.text_area("질문")
+            if st.button("질문하기", use_container_width=True):
+                r = requests.post(fn_url, json={"mode": "chat", "scope": scope, "question": q}, timeout=120)
+                out = safe_json(r)
+                if out and out.get("ok"):
+                    st.markdown(out.get("answer", ""))
+                else:
+                    st.error(show_api_error(out, "insights 호출 실패"))
+                    if isinstance(out, dict):
+                        st.json(out)
 
-            with col1:
-                st.markdown("### 📌 자동 인사이트 생성")
-                scope = st.text_input("스코프(scope)", value="global", help="예: global / org:INTERLOCK")
-                if st.button("🚀 인사이트 생성", type="primary", use_container_width=True):
-                    try:
-                        r = requests.post(fn_url, json={"mode": "insight", "scope": scope}, timeout=120)
-                        out = safe_json(r)
-                        if isinstance(out, dict) and out.get("ok"):
-                            st.success("생성 완료")
-                            st.markdown(out.get("insight", ""))
-                        else:
-                            st.error(show_api_error(out, "Unknown error"))
-                    except Exception as e:
-                        st.error(f"호출 실패: {e}")
-
-            with col2:
-                st.markdown("### 💬 추가 질의응답(챗봇)")
-                q = st.text_area("질문", placeholder="예: 조직 PLAIN에서 FB-LV 3인 소재는 어떤 카테고리에 유리해?")
-                if st.button("질문하기", use_container_width=True):
-                    if not q.strip():
-                        st.warning("질문을 입력해주세요.")
-                    else:
-                        try:
-                            st.session_state.chat_log = st.session_state.chat_log[-20:]
-                            payload = {"mode": "chat", "scope": scope, "session_id": st.session_state.ai_session_id, "question": q.strip()}
-                            r = requests.post(fn_url, json=payload, timeout=120)
-                            out = safe_json(r)
-                            if isinstance(out, dict) and out.get("ok"):
-                                st.session_state.ai_session_id = out.get("session_id")
-                                answer = out.get("answer", "")
-                                st.session_state.chat_log.append(("Q", q.strip()))
-                                st.session_state.chat_log.append(("A", answer))
-                            else:
-                                st.error(show_api_error(out, "Unknown error"))
-                        except Exception as e:
-                            st.error(f"호출 실패: {e}")
-
-                if st.session_state.chat_log:
-                    st.divider()
-                    for role, text in st.session_state.chat_log[-20:]:
-                        if role == "Q":
-                            st.markdown(f"**🟦 Q:** {text}")
-                        else:
-                            st.markdown(f"**🟩 A:** {text}")
-
-# =========================================================
-# 💾 데이터 관리
-# =========================================================
 elif menu == "💾 데이터 관리":
     st.markdown("## 💾 데이터 관리")
     tab1, tab2, tab3 = st.tabs(["📥 데이터 다운로드", "🧾 데이터 확인/편집", "🗑️ 데이터 삭제"])
 
     with tab1:
-        st.markdown("### 📥 데이터 다운로드")
         col1, col2 = st.columns(2, gap="large")
-
         with col1:
             st.markdown("#### 판매 데이터")
             if not st.session_state.sales_data.empty:
@@ -1212,9 +1103,6 @@ elif menu == "💾 데이터 관리":
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-            else:
-                st.info("다운로드할 판매 데이터가 없습니다.")
-
         with col2:
             st.markdown("#### 소재 데이터")
             if not st.session_state.material_data.empty:
@@ -1228,56 +1116,41 @@ elif menu == "💾 데이터 관리":
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-            else:
-                st.info("다운로드할 소재 데이터가 없습니다.")
 
     with tab2:
-        st.markdown("### 🧾 데이터 확인/편집")
         st.caption("편집 후 저장은 '전체 교체'로 반영됩니다(중복/불일치 방지).")
-
         st.markdown("#### 판매 데이터 편집")
-        df_edit_sales = st.data_editor(
-            st.session_state.sales_data[SALES_COLS].copy(),
-            use_container_width=True,
-            num_rows="dynamic",
-            key="editor_sales"
-        )
+        df_edit_sales = st.data_editor(st.session_state.sales_data[SALES_COLS].copy(), use_container_width=True, num_rows="dynamic")
         if st.button("💾 판매 편집 내용 저장(전체 교체)", type="primary", use_container_width=True):
             if replace_sales_data(df_edit_sales):
                 st.session_state.sales_data = load_sales_data()
-                st.success("✅ 판매 데이터 저장 완료")
+                st.success("✅ 저장 완료")
                 st.rerun()
 
         st.divider()
 
         st.markdown("#### 소재 데이터 편집")
-        df_edit_mat = st.data_editor(
-            st.session_state.material_data[MATERIAL_COLS].copy(),
-            use_container_width=True,
-            num_rows="dynamic",
-            key="editor_mat"
-        )
+        df_edit_mat = st.data_editor(st.session_state.material_data[MATERIAL_COLS].copy(), use_container_width=True, num_rows="dynamic")
         if st.button("💾 소재 편집 내용 저장(전체 교체)", type="primary", use_container_width=True):
             if replace_material_data(df_edit_mat):
                 st.session_state.material_data = load_material_data()
-                st.success("✅ 소재 데이터 저장 완료")
+                st.success("✅ 저장 완료")
                 st.rerun()
 
     with tab3:
-        st.markdown("### 🗑️ 데이터 삭제")
         st.warning("⚠️ **주의**: 삭제된 데이터는 복구할 수 없습니다! 먼저 백업을 다운로드하세요.")
         c1, c2 = st.columns(2, gap="large")
         with c1:
             if st.button("🗑️ 판매 데이터 전체 삭제", type="secondary", use_container_width=True):
                 if delete_all_sales_data():
                     st.session_state.sales_data = load_sales_data()
-                    st.success("✅ 판매 데이터가 삭제되었습니다.")
+                    st.success("✅ 삭제 완료")
                     st.rerun()
         with c2:
             if st.button("🗑️ 소재 데이터 전체 삭제", type="secondary", use_container_width=True):
                 if delete_all_material_data():
                     st.session_state.material_data = load_material_data()
-                    st.success("✅ 소재 데이터가 삭제되었습니다.")
+                    st.success("✅ 삭제 완료")
                     st.rerun()
 
 # Footer
