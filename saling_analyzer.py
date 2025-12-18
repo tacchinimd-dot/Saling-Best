@@ -597,9 +597,19 @@ if menu == "🏠 홈(챗)":
                             }
                             r = requests.post(fn_assist, json=payload, timeout=120)
                             out = r.json()
-                            if not out.get("ok"):
-                                ans = f"⚠️ 오류: {out.get('error','Unknown error')}"
-                                st.error(ans)
+                           if not isinstance(out, dict):
+    ans = f"⚠️ 오류: 응답이 JSON(dict)이 아닙니다: {out}"
+    st.error(ans)
+else:
+    if not out.get("ok"):
+        ans = f"⚠️ 오류: {out.get('error', out.get('message', 'Unknown error'))}"
+        st.error(ans)
+        with st.expander("🧾 (에러 원문) assistant 응답 보기", expanded=True):
+            st.json(out)
+    else:
+        ans = out.get("answer", "")
+        st.markdown(ans)
+
                             else:
                                 ans = out.get("answer", "")
                                 st.markdown(ans)
