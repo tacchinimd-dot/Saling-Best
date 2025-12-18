@@ -30,12 +30,11 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-/* ===== Base ===== */
 :root { --radius: 18px; }
-.block-container { padding-top: 1.3rem; padding-bottom: 2rem; }
+.block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
 h1, h2, h3 { letter-spacing: -0.5px; }
 
-/* ===== Card ===== */
+/* Card */
 .card {
   border-radius: var(--radius);
   padding: 16px 16px;
@@ -47,7 +46,7 @@ h1, h2, h3 { letter-spacing: -0.5px; }
 .card-sub { opacity: 0.8; font-size: 0.92rem; margin-bottom: 10px; }
 .hr { height: 1px; background: rgba(120,120,120,0.20); margin: 12px 0; }
 
-/* ===== Badges ===== */
+/* Badges */
 .badge {
   display:inline-block; padding: 6px 10px; border-radius: 999px;
   border: 1px solid rgba(120,120,120,0.28);
@@ -58,7 +57,7 @@ h1, h2, h3 { letter-spacing: -0.5px; }
 .badge-amber { background: rgba(255,190,66,0.13); border-color: rgba(255,190,66,0.40); }
 .badge-red   { background: rgba(255,86,86,0.12); border-color: rgba(255,86,86,0.38); }
 
-/* ===== Callout ===== */
+/* Callout */
 .callout {
   border-radius: var(--radius);
   padding: 14px 14px;
@@ -66,15 +65,14 @@ h1, h2, h3 { letter-spacing: -0.5px; }
   background: rgba(120,120,120,0.06);
 }
 
-/* ===== Small text ===== */
-.muted { opacity: 0.75; font-size: 0.9rem; }
+.muted { opacity: 0.78; font-size: 0.9rem; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # =========================
-# 템플릿 컬럼 정의 (최종)
+# 템플릿 컬럼 정의
 # =========================
 SALES_COLS = ["품번", "컬러", "가격", "제조방식", "소재명", "핏", "기장", "당시즌판매수량", "당시즌판매액"]
 MATERIAL_COLS = ["소재명", "소재업체", "혼용원단", "혼용율", "중량", "조직", "CT %", "SF %", "FB-LV"]
@@ -105,7 +103,7 @@ def make_json_safe_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# 유틸: 필수 텍스트 컬럼 기본값 보정 (NOT NULL 대비)
+# 유틸: 필수 텍스트 컬럼 기본값 보정
 # =========================
 def fill_required_text(df: pd.DataFrame, cols, default="UNKNOWN") -> pd.DataFrame:
     out = df.copy()
@@ -126,13 +124,13 @@ def safe_json(resp):
     except Exception:
         return None
 
-def show_api_error(out, fallback="AI 예측 실패(응답 형식 오류)"):
+def show_api_error(out, fallback="요청 실패(응답 형식 오류)"):
     if isinstance(out, dict):
         return out.get("error", fallback)
     return fallback
 
 # =========================
-# 유틸: 혼용 파싱/파생 feature (예측 정확도용)
+# 유틸: 혼용 파생 feature (예측 보조)
 # =========================
 FIBER_ALIASES = {
     "COTTON": ["COTTON", "CO", "CT", "COTNA"],
@@ -479,9 +477,6 @@ def enrich_sales_data(df: pd.DataFrame) -> pd.DataFrame:
             parsed_data.append({"성별": "알수없음", "아이템명": "알수없음", "카테고리": "기타", "연도": "알수없음", "시즌": "알수없음"})
     return pd.concat([enriched.reset_index(drop=True), pd.DataFrame(parsed_data)], axis=1)
 
-# =========================
-# 소재 매핑 유틸
-# =========================
 def get_material_row(material_name: str, mat_df: pd.DataFrame):
     if mat_df is None or mat_df.empty or not material_name:
         return None
@@ -504,9 +499,11 @@ if "ai_session_id" not in st.session_state:
     st.session_state.ai_session_id = None
 if "chat_log" not in st.session_state:
     st.session_state.chat_log = []
+if "home_chat" not in st.session_state:
+    st.session_state.home_chat = []  # [{"role":"user/assistant","content":"..."}]
 
 # =========================
-# Sidebar / Menu (UX 강화)
+# Sidebar
 # =========================
 st.sidebar.markdown("## 👔 Sergio Tacchini\n### 판매 분석 시스템")
 st.sidebar.markdown(
@@ -524,13 +521,113 @@ st.sidebar.markdown(
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🎯 조합 예측(AI)", "📥 데이터 입력", "📊 대시보드", "🏆 랭킹", "🧵 소재 분석", "🤖 AI 인사이트/챗봇", "💾 데이터 관리"]
+    ["🏠 홈(챗)", "🎯 조합 예측(AI)", "📥 데이터 입력", "📊 대시보드", "🏆 랭킹", "🧵 소재 분석", "🤖 AI 인사이트/챗봇", "💾 데이터 관리"]
 )
 
-# =========================
-# 1) 조합 예측 (AI 기반) - UI/UX 강화
-# =========================
-if menu == "🎯 조합 예측(AI)":
+# =========================================================
+# 🏠 홈(챗): DB 기반 Q&A + 예측(assistant Edge Function)
+# =========================================================
+if menu == "🏠 홈(챗)":
+    st.markdown("## 🏠 홈 · MD Q&A 챗봇")
+    st.markdown(
+        """
+<div class="callout">
+💬 예시 질문<br/>
+<b>“TWPQ10953에 사용했던 소재가 뭐였는지 알려주고, 그 소재를 기반으로 남자 롱슬리브를 만든다면 어느정도로 판매가 될지 예측해줘”</b>
+<br/><span class="muted">※ 챗봇은 DB(sales_data/material_data)를 조회하고, 필요 시 predict를 호출해 근거와 함께 답합니다.</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if requests is None:
+        st.error("requests 패키지가 없습니다. requirements.txt에 requests를 추가하세요.")
+    else:
+        fn_assist = st.secrets.get("SUPABASE_FUNCTION_ASSIST_URL", "")
+        if not fn_assist:
+            st.error("st.secrets에 SUPABASE_FUNCTION_ASSIST_URL을 설정해주세요.")
+        else:
+            # 모드 토글
+            cA, cB = st.columns([1, 2])
+            with cA:
+                rationale_mode_ui = st.radio(
+                    "🗣️ 답변 모드",
+                    ["🧑‍💼 MD 모드(상세)", "👔 임원 모드(요약)"],
+                    horizontal=False
+                )
+                rationale_mode = "md" if "MD 모드" in rationale_mode_ui else "exec"
+
+            with cB:
+                st.markdown(
+                    """
+<div class="card">
+  <div class="card-title">✅ 추천 사용법</div>
+  <div class="muted">
+  • “<b>품번</b> + 예측 의도(얼마나 팔릴지)”를 함께 적으면 가장 정확합니다.<br/>
+  • 예: “TWPQ10953 소재로 남성 긴팔티셔츠 만들면 판매 예측해줘”<br/>
+  • 답변은 <b>DB 조회 결과</b> + <b>예측 결과</b> 기반으로만 제공합니다.
+  </div>
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+
+            st.write("")
+
+            # 기존 대화 출력
+            for m in st.session_state.home_chat[-40:]:
+                with st.chat_message(m["role"]):
+                    st.markdown(m["content"])
+
+            user_msg = st.chat_input("품번/소재/예측 관련 질문을 입력하세요…")
+            if user_msg:
+                st.session_state.home_chat.append({"role": "user", "content": user_msg})
+                with st.chat_message("user"):
+                    st.markdown(user_msg)
+
+                history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.home_chat[-12:]]
+
+                with st.chat_message("assistant"):
+                    with st.spinner("DB 조회 + 예측 + 답변 생성 중…"):
+                        try:
+                            payload = {
+                                "question": user_msg,
+                                "history": history,
+                                "rationale_mode": rationale_mode,
+                            }
+                            r = requests.post(fn_assist, json=payload, timeout=120)
+                            out = r.json()
+                            if not out.get("ok"):
+                                ans = f"⚠️ 오류: {out.get('error','Unknown error')}"
+                                st.error(ans)
+                            else:
+                                ans = out.get("answer", "")
+                                st.markdown(ans)
+
+                                # 디버그는 접어서 제공
+                                with st.expander("🛠️ (디버그) assistant 컨텍스트", expanded=False):
+                                    st.json(out.get("context", {}))
+
+                            st.session_state.home_chat.append({"role": "assistant", "content": ans})
+                        except Exception as e:
+                            ans = f"⚠️ 호출 실패: {e}"
+                            st.error(ans)
+                            st.session_state.home_chat.append({"role": "assistant", "content": ans})
+
+            # 편의 기능
+            st.write("")
+            colX, colY = st.columns(2)
+            with colX:
+                if st.button("🧹 홈 챗 기록 지우기", use_container_width=True):
+                    st.session_state.home_chat = []
+                    st.rerun()
+            with colY:
+                st.caption("※ 기록이 길어지면 화면이 무거워질 수 있어 최근 40턴만 표시합니다.")
+
+# =========================================================
+# 🎯 조합 예측(AI): 직접 입력 예측 화면
+# =========================================================
+elif menu == "🎯 조합 예측(AI)":
     st.markdown("## 🎯 AI 조합 예측 시뮬레이터")
     st.markdown('<div class="callout">💡 <b>유사 판매 데이터 + 가격 + 소재 스펙(CT/SF/FB-LV)</b>을 함께 반영해 판매수량/판매액을 예측합니다.</div>', unsafe_allow_html=True)
 
@@ -559,43 +656,30 @@ if menu == "🎯 조합 예측(AI)":
                 length = st.selectbox("📏 기장", LENGTH_OPTIONS)
 
             default_price = int(df_enriched["가격"].median()) if "가격" in df_enriched.columns and len(df_enriched) else 0
-            price = st.number_input("💰 가격(예측 입력)", min_value=0, step=1000, value=default_price, help="예측 정확도에 큰 영향을 주는 핵심 입력입니다.")
+            price = st.number_input("💰 가격(예측 입력)", min_value=0, step=1000, value=default_price)
 
-            # ✅ MD/임원 모드 토글 (세그먼트 느낌)
             rationale_mode_ui = st.radio(
                 "🗣️ 근거 설명 모드",
                 ["🧑‍💼 MD 모드(상세)", "👔 임원 모드(요약)"],
-                horizontal=True,
-                help="MD 모드: 상세 근거 / 임원 모드: 2~3줄 요약"
+                horizontal=True
             )
             rationale_mode = "md" if "MD 모드" in rationale_mode_ui else "exec"
 
             mat_row = get_material_row(material, st.session_state.material_data)
-
-            # 소재 매핑 카드
             if mat_row:
-                org = mat_row.get("조직")
-                ct = mat_row.get("CT %")
-                sf = mat_row.get("SF %")
-                fb = mat_row.get("FB-LV")
-                wt = mat_row.get("중량")
-                bf = mat_row.get("혼용원단")
-                br = mat_row.get("혼용율")
-                sup = mat_row.get("소재업체")
-
                 st.markdown(
                     f"""
 <div class="card">
   <div class="card-title">🧵 소재 마스터 매핑</div>
-  <div class="muted">소재명: <b>{material}</b> / 업체: <b>{sup or "N/A"}</b></div>
+  <div class="muted">소재명: <b>{material}</b> / 업체: <b>{mat_row.get("소재업체") or "N/A"}</b></div>
   <div class="hr"></div>
-  <span class="badge badge-blue">조직: {org or "N/A"}</span>
-  <span class="badge badge-green">CT %: {ct if ct is not None else "N/A"}</span>
-  <span class="badge badge-green">SF %: {sf if sf is not None else "N/A"}</span>
-  <span class="badge badge-amber">FB-LV: {fb if fb is not None else "N/A"}</span>
-  <span class="badge">중량: {wt if wt is not None else "N/A"}</span>
+  <span class="badge badge-blue">조직: {mat_row.get("조직") or "N/A"}</span>
+  <span class="badge badge-green">CT %: {mat_row.get("CT %") if mat_row.get("CT %") is not None else "N/A"}</span>
+  <span class="badge badge-green">SF %: {mat_row.get("SF %") if mat_row.get("SF %") is not None else "N/A"}</span>
+  <span class="badge badge-amber">FB-LV: {mat_row.get("FB-LV") if mat_row.get("FB-LV") is not None else "N/A"}</span>
+  <span class="badge">중량: {mat_row.get("중량") if mat_row.get("중량") is not None else "N/A"}</span>
   <div class="hr"></div>
-  <div class="muted">혼용: <b>{bf or "N/A"}</b><br/>혼용율: <b>{br or "N/A"}</b></div>
+  <div class="muted">혼용: <b>{mat_row.get("혼용원단") or "N/A"}</b><br/>혼용율: <b>{mat_row.get("혼용율") or "N/A"}</b></div>
 </div>
 """,
                     unsafe_allow_html=True,
@@ -623,11 +707,8 @@ if menu == "🎯 조합 예측(AI)":
                 if not fn_predict:
                     st.error("SUPABASE_FUNCTION_PREDICT_URL이 설정되지 않았습니다.")
                 else:
-                    blend_feats = {}
-                    if mat_row:
-                        blend_feats = derive_blend_features(mat_row.get("혼용원단"), mat_row.get("혼용율"))
-                    else:
-                        blend_feats = {"pct_cotton": None, "pct_synthetic": None, "pct_regenerated": None, "pct_spandex": None, "n_fibers": None}
+                    blend_feats = derive_blend_features(mat_row.get("혼용원단"), mat_row.get("혼용율")) if mat_row else \
+                        {"pct_cotton": None, "pct_synthetic": None, "pct_regenerated": None, "pct_spandex": None, "n_fibers": None}
 
                     payload = {
                         "rationale_mode": rationale_mode,
@@ -638,7 +719,6 @@ if menu == "🎯 조합 예측(AI)":
                         "fit": fit,
                         "length": length,
                         "price": float(price),
-
                         "material_meta": {
                             "org": (mat_row.get("조직") if mat_row else None),
                             "ct_pct": (mat_row.get("CT %") if mat_row else None),
@@ -649,11 +729,9 @@ if menu == "🎯 조합 예측(AI)":
                             "blend_ratio": (mat_row.get("혼용율") if mat_row else None),
                             "supplier": (mat_row.get("소재업체") if mat_row else None),
                         },
-
                         "blend_features": blend_feats,
                     }
 
-                    # deep clean NaN/Inf
                     def _clean(x):
                         if isinstance(x, float) and (np.isnan(x) or np.isinf(x)):
                             return None
@@ -678,24 +756,19 @@ if menu == "🎯 조합 예측(AI)":
                             out = None
 
                     if not isinstance(out, dict) or not out.get("ok"):
-                        st.error(show_api_error(out))
+                        st.error(show_api_error(out, "AI 예측 실패"))
                     else:
                         res = out.get("result", {}) or {}
-
                         pred_qty = float(res.get("pred_qty", 0))
                         pred_amt = float(res.get("pred_amt", 0))
                         conf = float(res.get("confidence", 0))
 
-                        # 상단 KPI 카드
                         k1, k2, k3 = st.columns(3)
                         k1.metric("📦 예상 판매수량", f"{pred_qty:,.0f}개")
                         k2.metric("💵 예상 판매액", f"{pred_amt:,.0f}원")
                         k3.metric("✅ 신뢰도", f"{conf:,.0f}%")
-
-                        # 신뢰도 progress
                         st.progress(int(max(0, min(100, conf))), text=f"신뢰도 {conf:.0f}%")
 
-                        # 보수/기본/공격 카드
                         pos = res.get("positioning", {}) or {}
                         label = pos.get("label", "N/A")
                         low = pos.get("low", None)
@@ -717,10 +790,9 @@ if menu == "🎯 조합 예측(AI)":
                             f"""
 <div class="card">
   <div class="card-title">🎛️ 보수/기본/공격 시나리오</div>
-  <div class="muted">유사 상품군 분포(Q1/Q3)를 기준으로 LOW/BASE/HIGH를 제안합니다.</div>
+  <div class="muted">유사 상품군 분포(Q1/Q3) 기준 LOW/BASE/HIGH</div>
   <div class="hr"></div>
   <span class="badge {badge_class}">포지션: <b>{label}</b></span>
-  <div class="hr"></div>
 </div>
 """,
                             unsafe_allow_html=True,
@@ -730,11 +802,9 @@ if menu == "🎯 조합 예측(AI)":
                         s1.metric("🧊 보수(LOW)", f"{low}개" if low is not None else "N/A")
                         s2.metric("⚖️ 기본(BASE)", f"{base}개" if base is not None else "N/A")
                         s3.metric("🔥 공격(HIGH)", f"{high}개" if high is not None else "N/A")
-
                         if pos_expl:
                             st.info(pos_expl)
 
-                        # 근거 (대화형)
                         st.markdown("### 🗣️ 근거(대화형 설명)")
                         if rationale_mode == "exec":
                             st.markdown(res.get("rationale_exec", ""))
@@ -745,20 +815,16 @@ if menu == "🎯 조합 예측(AI)":
                         if warnings:
                             st.warning(" / ".join(warnings))
 
-                        # 참고사례는 접어두기
-                        with st.expander("🔎 참고한 유사 사례(상위 5개) 보기", expanded=False):
+                        with st.expander("🔎 참고한 유사 사례(상위 5개)", expanded=False):
                             ref = res.get("references", [])
                             if ref:
                                 st.dataframe(pd.DataFrame(ref), use_container_width=True)
                             else:
                                 st.caption("표시할 사례가 없습니다.")
 
-                        with st.expander("🛠️ (디버그) 예측 입력 payload 보기", expanded=False):
-                            st.json(payload)
-
-# =========================
-# 2) 데이터 입력
-# =========================
+# =========================================================
+# 📥 데이터 입력
+# =========================================================
 elif menu == "📥 데이터 입력":
     st.markdown("## 📥 데이터 입력")
     st.markdown('<div class="callout">엑셀 업로드는 <b>추가 Insert</b> 또는 <b>전체 교체</b>로 반영할 수 있습니다.</div>', unsafe_allow_html=True)
@@ -768,15 +834,13 @@ elif menu == "📥 데이터 입력":
     with tab1:
         st.markdown("### 📝 판매 데이터 수동 입력")
         st.caption("템플릿: 품번/컬러/가격/제조방식/소재명/핏/기장/당시즌판매수량/당시즌판매액")
-
         col1, col2 = st.columns(2)
         with col1:
-            input_code = st.text_input("품번", placeholder="TXHD6054")
+            input_code = st.text_input("품번", placeholder="TWPQ10953")
             input_color = st.text_input("컬러", placeholder="BKS")
             input_price_unit = st.number_input("가격", min_value=0, step=1000, value=149000)
             input_manufacturing = st.text_input("제조방식", value="KNIT")
-            input_material = st.text_input("소재명", placeholder="JZR3055 595쮸리")
-
+            input_material = st.text_input("소재명", placeholder="HS-17")
         with col2:
             input_fit = st.text_input("핏", value="REGULAR")
             input_length = st.text_input("기장", value="REGULAR")
@@ -812,7 +876,7 @@ elif menu == "📥 데이터 입력":
     with tab2:
         st.markdown("### 📂 Excel 업로드 (판매 데이터)")
         template = pd.DataFrame(columns=SALES_COLS)
-        template.loc[0] = ["TXHD6054", "BKS", 149000, "KNIT", "JZR3055 595쮸리", "REGULAR", "REGULAR", 15, 2235000]
+        template.loc[0] = ["TWPQ10953", "BKS", 149000, "KNIT", "HS-17", "REGULAR", "REGULAR", 15, 2235000]
 
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -860,7 +924,7 @@ elif menu == "📥 데이터 입력":
         st.caption("혼용원단/혼용율은 '/' 구분자로 입력 (예: POLYESTER / ELASTINE / MODAL | 50 / 30 / 20)")
 
         template_mat = pd.DataFrame(columns=MATERIAL_COLS)
-        template_mat.loc[0] = ["BF-5933", "BF", "POLYESTER / ELASTINE / MODAL", "50 / 30 / 20", 300, "INTERLOCK", 0, 100, 3]
+        template_mat.loc[0] = ["HS-17", "BF", "POLYESTER / ELASTINE / MODAL", "50 / 30 / 20", 300, "PLAIN", 0, 100, 3]
 
         buffer2 = io.BytesIO()
         with pd.ExcelWriter(buffer2, engine="openpyxl") as writer:
@@ -903,16 +967,15 @@ elif menu == "📥 데이터 입력":
             except Exception as e:
                 st.error(f"❌ 오류: {e}")
 
-# =========================
-# 3) 대시보드
-# =========================
+# =========================================================
+# 📊 대시보드
+# =========================================================
 elif menu == "📊 대시보드":
     st.markdown("## 📊 판매 분석 대시보드 (당시즌 기준)")
     if st.session_state.sales_data.empty:
         st.warning("⚠️ 분석할 데이터가 없습니다.")
     else:
         df = enrich_sales_data(st.session_state.sales_data.copy())
-
         total_qty = df["당시즌판매수량"].sum()
         total_amt = df["당시즌판매액"].sum()
         avg_price = (total_amt / total_qty) if total_qty > 0 else 0
@@ -937,9 +1000,9 @@ elif menu == "📊 대시보드":
             fig2.update_layout(showlegend=False, xaxis_title="판매수량", yaxis_title="")
             st.plotly_chart(fig2, use_container_width=True)
 
-# =========================
-# 4) 랭킹
-# =========================
+# =========================================================
+# 🏆 랭킹
+# =========================================================
 elif menu == "🏆 랭킹":
     st.markdown("## 🏆 조합별 성과 랭킹 (당시즌 기준)")
     if st.session_state.sales_data.empty:
@@ -974,9 +1037,9 @@ elif menu == "🏆 랭킹":
             st.plotly_chart(fig_bottom, use_container_width=True)
             st.dataframe(bottom_combos, use_container_width=True, hide_index=True)
 
-# =========================
-# 5) 소재 분석 (CT/SF/FB-LV)
-# =========================
+# =========================================================
+# 🧵 소재 분석
+# =========================================================
 elif menu == "🧵 소재 분석":
     st.markdown("## 🧵 소재별 성과 분석 (당시즌 기준)")
     if st.session_state.sales_data.empty:
@@ -996,7 +1059,7 @@ elif menu == "🧵 소재 분석":
         st.dataframe(material_stats, use_container_width=True, hide_index=True)
 
         st.divider()
-        st.markdown("### 🧬 조직 × CT/SF/FB-LV × 판매 성과 매트릭스")
+        st.markdown("### 🧬 조직 × CT/SF/FB-LV × 판매 성과")
 
         if st.session_state.material_data.empty:
             st.warning("소재 마스터(material_data)가 비어 있어 조직 매트릭스를 생성할 수 없습니다.")
@@ -1006,6 +1069,7 @@ elif menu == "🧵 소재 분석":
 
             sales_df["당시즌판매수량"] = pd.to_numeric(sales_df["당시즌판매수량"], errors="coerce").fillna(0)
             sales_df["당시즌판매액"] = pd.to_numeric(sales_df["당시즌판매액"], errors="coerce").fillna(0)
+
             for c in ["CT %", "SF %", "FB-LV"]:
                 mat_df[c] = pd.to_numeric(mat_df[c], errors="coerce")
 
@@ -1030,6 +1094,7 @@ elif menu == "🧵 소재 분석":
                 )
                 .reset_index()
             )
+
             for c in ["평균_CT", "평균_SF", "평균_FB_LV", "평균판매수량"]:
                 matrix[c] = matrix[c].round(2)
             matrix["총판매액"] = matrix["총판매액"].fillna(0).astype(int)
@@ -1051,11 +1116,11 @@ elif menu == "🧵 소재 분석":
                 fig.update_layout(xaxis_title="CT % (↑)", yaxis_title="SF % (↑)")
                 st.plotly_chart(fig, use_container_width=True)
 
-# =========================
-# 6) AI 인사이트/챗봇
-# =========================
+# =========================================================
+# 🤖 AI 인사이트/챗봇 (선택 유지)
+# =========================================================
 elif menu == "🤖 AI 인사이트/챗봇":
-    st.markdown("## 🤖 AI 인사이트 & Q&A")
+    st.markdown("## 🤖 AI 인사이트 & Q&A (옵션)")
     if requests is None:
         st.error("requests 패키지가 없습니다. requirements.txt에 requests를 추가하세요.")
     elif supabase is None:
@@ -1063,7 +1128,7 @@ elif menu == "🤖 AI 인사이트/챗봇":
     else:
         fn_url = st.secrets.get("SUPABASE_FUNCTION_INSIGHTS_URL", "")
         if not fn_url:
-            st.warning("st.secrets에 SUPABASE_FUNCTION_INSIGHTS_URL을 설정해주세요.")
+            st.info("SUPABASE_FUNCTION_INSIGHTS_URL이 없으면 이 메뉴는 사용하지 않습니다. (홈 챗봇 사용 권장)")
         else:
             st.markdown('<div class="callout">🔐 OpenAI Key는 Streamlit이 아니라 <b>Supabase Edge Function</b>에만 설정하세요.</div>', unsafe_allow_html=True)
             col1, col2 = st.columns([1, 1], gap="large")
@@ -1085,7 +1150,7 @@ elif menu == "🤖 AI 인사이트/챗봇":
 
             with col2:
                 st.markdown("### 💬 추가 질의응답(챗봇)")
-                q = st.text_area("질문", placeholder="예: FB-LV 4~5 구간 소재는 어떤 조합에서 판매가 좋았어?")
+                q = st.text_area("질문", placeholder="예: 조직 PLAIN에서 FB-LV 3인 소재는 어떤 카테고리에 유리해?")
                 if st.button("질문하기", use_container_width=True):
                     if not q.strip():
                         st.warning("질문을 입력해주세요.")
@@ -1113,9 +1178,9 @@ elif menu == "🤖 AI 인사이트/챗봇":
                         else:
                             st.markdown(f"**🟩 A:** {text}")
 
-# =========================
-# 7) 데이터 관리
-# =========================
+# =========================================================
+# 💾 데이터 관리
+# =========================================================
 elif menu == "💾 데이터 관리":
     st.markdown("## 💾 데이터 관리")
     tab1, tab2, tab3 = st.tabs(["📥 데이터 다운로드", "🧾 데이터 확인/편집", "🗑️ 데이터 삭제"])
@@ -1205,8 +1270,6 @@ elif menu == "💾 데이터 관리":
                     st.success("✅ 소재 데이터가 삭제되었습니다.")
                     st.rerun()
 
-# =========================
 # Footer
-# =========================
 st.sidebar.divider()
 st.sidebar.caption("© 2025 세르지오타키니 판매분석시스템 (Streamlit+Supabase)")
